@@ -51,6 +51,7 @@ import com.voxengine.data.AppDatabase
 import com.voxengine.data.SettingsRepository
 import com.voxengine.data.SynthesisHistoryEntity
 import com.voxengine.engine.EngineRegistry
+import com.voxengine.engine.VoiceInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -82,7 +83,10 @@ fun TestScreen() {
     val history by db.synthesisHistoryDao().getRecent(10).collectAsState(initial = emptyList())
 
     var text by remember { mutableStateOf("你好，欢迎使用 VoxEngine 语音合成引擎！") }
-    var selectedVoice by remember { mutableStateOf("冰糖") }
+    // 存储选中的音色 ID（用于 API 调用）
+    var selectedVoiceId by remember { mutableStateOf("bingtang") }
+    // 存储选中的音色显示名（用于 UI 显示）
+    var selectedVoiceName by remember { mutableStateOf("冰糖") }
     var selectedStyle by remember { mutableStateOf("无") }
     var speed by remember { mutableFloatStateOf(1.0f) }
     var isSynthesizing by remember { mutableStateOf(false) }
@@ -155,13 +159,14 @@ fun TestScreen() {
         Spacer(Modifier.height(12.dp))
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // 音色选择 - 使用 voice.id 作为 API 参数
             ExposedDropdownMenuBox(
                 expanded = voiceExpanded,
                 onExpandedChange = { voiceExpanded = it },
                 modifier = Modifier.weight(1f)
             ) {
                 OutlinedTextField(
-                    value = selectedVoice,
+                    value = selectedVoiceName,
                     onValueChange = {},
                     readOnly = true,
                     label = { Text("音色") },
@@ -171,13 +176,18 @@ fun TestScreen() {
                 ExposedDropdownMenu(expanded = voiceExpanded, onDismissRequest = { voiceExpanded = false }) {
                     voices.forEach { voice ->
                         DropdownMenuItem(
-                            text = { Text(voice.name) },
-                            onClick = { selectedVoice = voice.name; voiceExpanded = false }
+                            text = { Text("${voice.name} - ${voice.description}") },
+                            onClick = {
+                                selectedVoiceId = voice.id  // 用 ID 调 API
+                                selectedVoiceName = voice.name  // 用 name 显示
+                                voiceExpanded = false
+                            }
                         )
                     }
                 }
             }
 
+            // 风格选择
             if (styles.isNotEmpty()) {
                 ExposedDropdownMenuBox(
                     expanded = styleExpanded,
@@ -224,7 +234,8 @@ fun TestScreen() {
                     try {
                         val engine = activeEngine ?: throw IllegalStateException("未选择引擎")
                         val result = withContext(Dispatchers.IO) {
-                            engine.synthesize(text, selectedVoice, selectedStyle, speed)
+                            // 使用 voice.id 调用 API（bingtang/baihua 等）
+                            engine.synthesize(text, selectedVoiceId, selectedStyle, speed)
                         }
                         elapsedMs = result.elapsedMs
                         statusText = "合成完成 (${elapsedMs}ms)，播放中..."
@@ -233,7 +244,7 @@ fun TestScreen() {
                         db.synthesisHistoryDao().insert(
                             SynthesisHistoryEntity(
                                 text = text,
-                                voice = selectedVoice,
+                                voice = selectedVoiceId,
                                 style = selectedStyle,
                                 speed = speed,
                                 engineId = currentEngineId
@@ -291,10 +302,14 @@ fun TestScreen() {
             Spacer(Modifier.height(8.dp))
             
             history.forEach { record ->
+                // 从 voices 列表中找到对应的显示名
+                val voiceDisplayName = voices.find { it.id == record.voice }?.name ?: record.voice
+                
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable {
                         text = record.text
-                        selectedVoice = record.voice
+                        selectedVoiceId = record.voice
+                        selectedVoiceName = voiceDisplayName
                         selectedStyle = record.style ?: "无"
                         speed = record.speed
                     }
@@ -310,7 +325,7 @@ fun TestScreen() {
                                 style = MaterialTheme.typography.bodyMedium
                             )
                             Text(
-                                "${record.voice} | ${record.style ?: "无"} | ${String.format("%.1f", record.speed)}x",
+                                "$voiceDisplayName | ${record.style ?: "无"} | ${String.format("%.1f", record.speed)}x",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
