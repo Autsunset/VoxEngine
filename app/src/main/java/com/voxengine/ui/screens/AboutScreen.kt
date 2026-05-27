@@ -51,7 +51,7 @@ fun AboutScreen(navController: NavController = rememberNavController()) {
         Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("VoxEngine", style = MaterialTheme.typography.headlineMedium)
-                Text("版本 1.0.3", style = MaterialTheme.typography.bodySmall,
+                Text("版本 2026.05.28.1", style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(8.dp))
                 Text(
