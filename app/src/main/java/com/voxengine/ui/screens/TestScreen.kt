@@ -12,10 +12,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Button
@@ -30,14 +26,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -51,7 +45,6 @@ import com.voxengine.data.AppDatabase
 import com.voxengine.data.SettingsRepository
 import com.voxengine.data.SynthesisHistoryEntity
 import com.voxengine.engine.EngineRegistry
-import com.voxengine.engine.VoiceInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -83,12 +76,9 @@ fun TestScreen() {
     val history by db.synthesisHistoryDao().getRecent(10).collectAsState(initial = emptyList())
 
     var text by remember { mutableStateOf("你好，欢迎使用 VoxEngine 语音合成引擎！") }
-    // 存储选中的音色 ID（用于 API 调用）
-    var selectedVoiceId by remember { mutableStateOf("bingtang") }
-    // 存储选中的音色显示名（用于 UI 显示）
+    var selectedVoiceId by remember { mutableStateOf("冰糖") }
     var selectedVoiceName by remember { mutableStateOf("冰糖") }
-    var selectedStyle by remember { mutableStateOf("无") }
-    var speed by remember { mutableFloatStateOf(1.0f) }
+    var selectedStyle by remember { mutableStateOf("") }
     var isSynthesizing by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
     var elapsedMs by remember { mutableStateOf(0L) }
@@ -101,7 +91,6 @@ fun TestScreen() {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
         TopAppBar(title = { Text("TTS 测试 - ${activeEngine?.name ?: currentEngineId}") })
@@ -128,27 +117,6 @@ fun TestScreen() {
                     )
                 }
             }
-        } else {
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                colors = androidx.compose.material3.CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        "✅ API Key 已配置",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "API: $baseUrl",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                }
-            }
         }
 
         OutlinedTextField(
@@ -160,7 +128,7 @@ fun TestScreen() {
         Spacer(Modifier.height(12.dp))
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            // 音色选择 - 使用 voice.id 作为 API 参数
+            // 音色选择
             ExposedDropdownMenuBox(
                 expanded = voiceExpanded,
                 onExpandedChange = { voiceExpanded = it },
@@ -179,8 +147,8 @@ fun TestScreen() {
                         DropdownMenuItem(
                             text = { Text("${voice.name} - ${voice.description}") },
                             onClick = {
-                                selectedVoiceId = voice.id  // 用 ID 调 API
-                                selectedVoiceName = voice.name  // 用 name 显示
+                                selectedVoiceId = voice.id
+                                selectedVoiceName = voice.name
                                 voiceExpanded = false
                             }
                         )
@@ -188,43 +156,32 @@ fun TestScreen() {
                 }
             }
 
-            // 风格选择
-            if (styles.isNotEmpty()) {
-                ExposedDropdownMenuBox(
-                    expanded = styleExpanded,
-                    onExpandedChange = { styleExpanded = it },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    OutlinedTextField(
-                        value = selectedStyle,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("风格") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = styleExpanded) },
-                        modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                    )
-                    ExposedDropdownMenu(expanded = styleExpanded, onDismissRequest = { styleExpanded = false }) {
-                        styles.forEach { style ->
-                            DropdownMenuItem(
-                                text = { Text(style) },
-                                onClick = { selectedStyle = style; styleExpanded = false }
-                            )
-                        }
+            // 风格选择 - 可选预设或自定义输入
+            ExposedDropdownMenuBox(
+                expanded = styleExpanded,
+                onExpandedChange = { styleExpanded = it },
+                modifier = Modifier.weight(1f)
+            ) {
+                OutlinedTextField(
+                    value = selectedStyle,
+                    onValueChange = { selectedStyle = it },
+                    label = { Text("风格") },
+                    placeholder = { Text("可选或自定义输入") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = styleExpanded) },
+                    modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryEditable)
+                )
+                ExposedDropdownMenu(expanded = styleExpanded, onDismissRequest = { styleExpanded = false }) {
+                    styles.forEach { style ->
+                        DropdownMenuItem(
+                            text = { Text(style) },
+                            onClick = { selectedStyle = style; styleExpanded = false }
+                        )
                     }
                 }
             }
         }
 
-        Spacer(Modifier.height(8.dp))
-        Text("语速: ${String.format("%.1f", speed)}x")
-        Slider(
-            value = speed,
-            onValueChange = { speed = it },
-            valueRange = 0.5f..2.0f,
-            steps = 14
-        )
-
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(16.dp))
 
         Button(
             onClick = {
@@ -234,8 +191,10 @@ fun TestScreen() {
                     elapsedMs = 0
                     try {
                         val engine = activeEngine ?: throw IllegalStateException("未选择引擎")
+                        // 风格为空或"无"时传 null
+                        val styleParam = selectedStyle.ifBlank { null }?.takeIf { it != "无" }
                         val result = withContext(Dispatchers.IO) {
-                            engine.synthesize(text, selectedVoiceId, selectedStyle)
+                            engine.synthesize(text, selectedVoiceId, styleParam)
                         }
                         elapsedMs = result.elapsedMs
                         isSynthesizing = false
@@ -247,8 +206,8 @@ fun TestScreen() {
                             SynthesisHistoryEntity(
                                 text = text,
                                 voice = selectedVoiceId,
-                                style = selectedStyle,
-                                speed = speed,
+                                style = selectedStyle.ifBlank { "无" },
+                                speed = 1.0f,
                                 engineId = currentEngineId
                             )
                         )
@@ -280,7 +239,16 @@ fun TestScreen() {
 
         Spacer(Modifier.height(12.dp))
 
+        // 当前配置摘要
+        val currentStyle = selectedStyle.ifBlank { "无" }
+        Text(
+            "当前: $selectedVoiceName | 风格: $currentStyle",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
         if (statusText.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("状态: $statusText")
@@ -309,7 +277,6 @@ fun TestScreen() {
             Spacer(Modifier.height(8.dp))
             
             history.forEach { record ->
-                // 从 voices 列表中找到对应的显示名
                 val voiceDisplayName = voices.find { it.id == record.voice }?.name ?: record.voice
                 
                 Card(
@@ -317,8 +284,7 @@ fun TestScreen() {
                         text = record.text
                         selectedVoiceId = record.voice
                         selectedVoiceName = voiceDisplayName
-                        selectedStyle = record.style ?: "无"
-                        speed = record.speed
+                        selectedStyle = record.style?.takeIf { it != "无" } ?: ""
                     }
                 ) {
                     Row(
@@ -332,7 +298,7 @@ fun TestScreen() {
                                 style = MaterialTheme.typography.bodyMedium
                             )
                             Text(
-                                "$voiceDisplayName | ${record.style ?: "无"} | ${String.format("%.1f", record.speed)}x",
+                                "$voiceDisplayName | ${record.style ?: "无"}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -351,13 +317,6 @@ fun TestScreen() {
                 }
             }
         }
-
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "提示: 请先在设置页面配置 API Key，然后选择音色和风格进行测试",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 

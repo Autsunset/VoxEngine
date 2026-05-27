@@ -316,11 +316,13 @@ fun SettingsScreen() {
                     ) {
                         OutlinedTextField(
                             value = defaultStyle,
-                            onValueChange = {},
-                            readOnly = true,
+                            onValueChange = { newValue ->
+                                scope.launch { settings.updateDefaultStyle(newValue) }
+                            },
                             label = { Text("默认风格") },
+                            placeholder = { Text("如：温柔磁性") },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = styleExpanded) },
-                            modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                            modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryEditable)
                         )
                         ExposedDropdownMenu(
                             expanded = styleExpanded,
