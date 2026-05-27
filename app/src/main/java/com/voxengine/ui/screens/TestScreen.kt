@@ -12,9 +12,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
@@ -25,11 +28,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,6 +51,7 @@ import com.voxengine.data.SettingsRepository
 import com.voxengine.data.SynthesisHistoryEntity
 import com.voxengine.engine.EngineRegistry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -81,16 +87,54 @@ fun TestScreen() {
     var selectedStyle by remember { mutableStateOf("") }
     var isSynthesizing by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
+    var isPaused by remember { mutableStateOf(false) }
     var elapsedMs by remember { mutableStateOf(0L) }
     var voiceExpanded by remember { mutableStateOf(false) }
     var styleExpanded by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("") }
 
+    // 持有当前 AudioTrack 引用，用于暂停/停止
+    var currentTrack by remember { mutableStateOf<AudioTrack?>(null) }
+    // 播放协程 Job
+    var playJob by remember { mutableStateOf<Job?>(null) }
+
     val isConfigured = apiKey.isNotBlank()
+
+    // 离开页面时停止播放
+    DisposableEffect(Unit) {
+        onDispose {
+            playJob?.cancel()
+            currentTrack?.let { track ->
+                try {
+                    track.stop()
+                    track.release()
+                } catch (_: Exception) {}
+            }
+            currentTrack = null
+        }
+    }
+
+    // 停止播放的函数
+    val stopPlayback = {
+        playJob?.cancel()
+        playJob = null
+        currentTrack?.let { track ->
+            try {
+                track.stop()
+                track.release()
+            } catch (_: Exception) {}
+        }
+        currentTrack = null
+        isPlaying = false
+        isPaused = false
+        isSynthesizing = false
+        statusText = "已停止"
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp)
     ) {
         TopAppBar(title = { Text("TTS 测试 - ${activeEngine?.name ?: currentEngineId}") })
@@ -156,7 +200,7 @@ fun TestScreen() {
                 }
             }
 
-            // 风格选择 - 可选预设或自定义输入
+            // 风格 - 可输入可选
             ExposedDropdownMenuBox(
                 expanded = styleExpanded,
                 onExpandedChange = { styleExpanded = it },
@@ -183,62 +227,6 @@ fun TestScreen() {
 
         Spacer(Modifier.height(16.dp))
 
-        Button(
-            onClick = {
-                scope.launch {
-                    isSynthesizing = true
-                    statusText = "合成中..."
-                    elapsedMs = 0
-                    try {
-                        val engine = activeEngine ?: throw IllegalStateException("未选择引擎")
-                        // 风格为空或"无"时传 null
-                        val styleParam = selectedStyle.ifBlank { null }?.takeIf { it != "无" }
-                        val result = withContext(Dispatchers.IO) {
-                            engine.synthesize(text, selectedVoiceId, styleParam)
-                        }
-                        elapsedMs = result.elapsedMs
-                        isSynthesizing = false
-                        statusText = "合成完成 (${elapsedMs}ms)，播放中..."
-                        isPlaying = true
-
-                        // 保存到历史记录
-                        db.synthesisHistoryDao().insert(
-                            SynthesisHistoryEntity(
-                                text = text,
-                                voice = selectedVoiceId,
-                                style = selectedStyle.ifBlank { "无" },
-                                speed = 1.0f,
-                                engineId = currentEngineId
-                            )
-                        )
-
-                        withContext(Dispatchers.IO) {
-                            playAudio(result.audioData)
-                        }
-                        statusText = "播放完成"
-                    } catch (e: Exception) {
-                        statusText = "错误: ${e.message}"
-                    } finally {
-                        isSynthesizing = false
-                        isPlaying = false
-                    }
-                }
-            },
-            enabled = !isSynthesizing && !isPlaying && text.isNotBlank() && isConfigured,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            if (isSynthesizing || isPlaying) {
-                CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp))
-            }
-            Text(when {
-                isSynthesizing -> "合成中..."
-                isPlaying -> "播放中..."
-                else -> "合成并播放"
-            })
-        }
-
-        Spacer(Modifier.height(12.dp))
-
         // 当前配置摘要
         val currentStyle = selectedStyle.ifBlank { "无" }
         Text(
@@ -246,9 +234,101 @@ fun TestScreen() {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        Spacer(Modifier.height(8.dp))
+
+        // 播放控制按钮
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    scope.launch {
+                        isSynthesizing = true
+                        statusText = "合成中..."
+                        elapsedMs = 0
+                        try {
+                            val engine = activeEngine ?: throw IllegalStateException("未选择引擎")
+                            val styleParam = selectedStyle.ifBlank { null }?.takeIf { it != "无" }
+                            val result = withContext(Dispatchers.IO) {
+                                engine.synthesize(text, selectedVoiceId, styleParam)
+                            }
+                            elapsedMs = result.elapsedMs
+                            isSynthesizing = false
+                            statusText = "合成完成 (${elapsedMs}ms)，播放中..."
+                            isPlaying = true
+                            isPaused = false
+
+                            db.synthesisHistoryDao().insert(
+                                SynthesisHistoryEntity(
+                                    text = text,
+                                    voice = selectedVoiceId,
+                                    style = selectedStyle.ifBlank { "无" },
+                                    speed = 1.0f,
+                                    engineId = currentEngineId
+                                )
+                            )
+
+                            playJob = scope.launch(Dispatchers.IO) {
+                                playAudioWithControl(result.audioData) { track ->
+                                    currentTrack = track
+                                }
+                            }
+                            playJob?.join()
+                            if (isPlaying) statusText = "播放完成"
+                        } catch (e: Exception) {
+                            statusText = "错误: ${e.message}"
+                        } finally {
+                            currentTrack = null
+                            isSynthesizing = false
+                            isPlaying = false
+                            isPaused = false
+                        }
+                    }
+                },
+                enabled = !isSynthesizing && !isPlaying && text.isNotBlank() && isConfigured,
+                modifier = Modifier.weight(1f)
+            ) {
+                if (isSynthesizing) {
+                    CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp))
+                }
+                Text(if (isSynthesizing) "合成中..." else "合成并播放")
+            }
+
+            // 暂停/继续按钮
+            if (isPlaying) {
+                OutlinedButton(
+                    onClick = {
+                        currentTrack?.let { track ->
+                            if (isPaused) {
+                                track.play()
+                                isPaused = false
+                                statusText = "播放中..."
+                            } else {
+                                track.pause()
+                                isPaused = true
+                                statusText = "已暂停"
+                            }
+                        }
+                    }
+                ) {
+                    Text(if (isPaused) "继续" else "暂停")
+                }
+            }
+
+            // 停止按钮
+            if (isPlaying || isSynthesizing) {
+                OutlinedButton(
+                    onClick = { stopPlayback() },
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("停止")
+                }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
 
         if (statusText.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("状态: $statusText")
@@ -320,7 +400,13 @@ fun TestScreen() {
     }
 }
 
-private suspend fun playAudio(wavData: ByteArray) = withContext(Dispatchers.IO) {
+/**
+ * 播放音频，通过回调暴露 AudioTrack 引用以便外部暂停/停止
+ */
+private suspend fun playAudioWithControl(
+    wavData: ByteArray,
+    onTrackReady: (AudioTrack) -> Unit
+) = withContext(Dispatchers.IO) {
     val sampleRate = AudioUtils.getWavSampleRate(wavData)
     val channelCount = AudioUtils.getWavChannelCount(wavData)
     val bitsPerSample = AudioUtils.getWavBitsPerSample(wavData)
@@ -350,6 +436,7 @@ private suspend fun playAudio(wavData: ByteArray) = withContext(Dispatchers.IO) 
 
     track.write(pcmData, 0, pcmData.size)
     track.play()
+    onTrackReady(track) // 暴露 track 引用
     while (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
         Thread.sleep(50)
     }
