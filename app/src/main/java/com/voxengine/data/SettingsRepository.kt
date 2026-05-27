@@ -25,6 +25,8 @@ class SettingsRepository(private val context: Context) {
     val bridgePort: Flow<Int> = context.dataStore.data.map { it[KEY_BRIDGE_PORT] ?: 9880 }
     val darkMode: Flow<Boolean> = context.dataStore.data.map { it[KEY_DARK_MODE] ?: false }
     val currentEngine: Flow<String> = context.dataStore.data.map { it[KEY_CURRENT_ENGINE] ?: "mimo" }
+    val userAgent: Flow<String> = context.dataStore.data.map { it[KEY_USER_AGENT] ?: "openclaw/unknown" }
+    val parallelSynthesis: Flow<Boolean> = context.dataStore.data.map { it[KEY_PARALLEL_SYNTHESIS] ?: false }
 
     suspend fun updateBaseUrl(url: String) { context.dataStore.edit { it[KEY_BASE_URL] = url } }
     suspend fun updateApiKey(key: String) { context.dataStore.edit { it[KEY_API_KEY] = key } }
@@ -35,6 +37,8 @@ class SettingsRepository(private val context: Context) {
     suspend fun updateBridgePort(port: Int) { context.dataStore.edit { it[KEY_BRIDGE_PORT] = port } }
     suspend fun updateDarkMode(enabled: Boolean) { context.dataStore.edit { it[KEY_DARK_MODE] = enabled } }
     suspend fun updateCurrentEngine(engineId: String) { context.dataStore.edit { it[KEY_CURRENT_ENGINE] = engineId } }
+    suspend fun updateUserAgent(ua: String) { context.dataStore.edit { it[KEY_USER_AGENT] = ua } }
+    suspend fun updateParallelSynthesis(enabled: Boolean) { context.dataStore.edit { it[KEY_PARALLEL_SYNTHESIS] = enabled } }
 
     fun getEngineConfig(engineId: String, key: String): Flow<String> {
         val configKey = stringPreferencesKey("${engineId}_$key")
@@ -56,5 +60,7 @@ class SettingsRepository(private val context: Context) {
         private val KEY_BRIDGE_PORT = intPreferencesKey("bridge_port")
         private val KEY_DARK_MODE = booleanPreferencesKey("dark_mode")
         private val KEY_CURRENT_ENGINE = stringPreferencesKey("current_engine")
+        private val KEY_USER_AGENT = stringPreferencesKey("user_agent")
+        private val KEY_PARALLEL_SYNTHESIS = booleanPreferencesKey("parallel_synthesis")
     }
 }

@@ -30,11 +30,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -71,11 +73,11 @@ fun TestScreen() {
     val baseUrl by settings.baseUrl.collectAsState(initial = "https://api.xiaomimimo.com")
     val activeEngine = remember(currentEngineId) { EngineRegistry.get(currentEngineId) }
 
-    val voices = remember(activeEngine) {
-        kotlinx.coroutines.runBlocking { activeEngine?.getVoices() ?: emptyList() }
+    val voices by produceState(initialValue = emptyList<com.voxengine.engine.VoiceInfo>(), activeEngine) {
+        value = activeEngine?.getVoices() ?: emptyList()
     }
-    val styles = remember(activeEngine) {
-        kotlinx.coroutines.runBlocking { activeEngine?.getStyles() ?: emptyList() }
+    val styles by produceState(initialValue = emptyList<String>(), activeEngine) {
+        value = activeEngine?.getStyles() ?: emptyList()
     }
     
     // 合成历史
@@ -131,13 +133,16 @@ fun TestScreen() {
         statusText = "已停止"
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp)
-    ) {
-        TopAppBar(title = { Text("TTS 测试 - ${activeEngine?.name ?: currentEngineId}") })
+    Scaffold(
+        topBar = { TopAppBar(title = { Text("TTS 测试 - ${activeEngine?.name ?: currentEngineId}") }) }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(padding)
+                .padding(16.dp)
+        ) {
 
         // API Key 状态提示
         if (!isConfigured) {
@@ -200,27 +205,31 @@ fun TestScreen() {
                 }
             }
 
-            // 风格 - 可输入可选
-            ExposedDropdownMenuBox(
-                expanded = styleExpanded,
-                onExpandedChange = { styleExpanded = it },
+            // 风格 - 自由输入框
+            OutlinedTextField(
+                value = selectedStyle,
+                onValueChange = { selectedStyle = it },
+                label = { Text("风格（可自定义）") },
+                placeholder = { Text("如：温柔磁性、东北话") },
                 modifier = Modifier.weight(1f)
-            ) {
-                OutlinedTextField(
-                    value = selectedStyle,
-                    onValueChange = { selectedStyle = it },
-                    label = { Text("风格") },
-                    placeholder = { Text("可选或自定义输入") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = styleExpanded) },
-                    modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryEditable)
-                )
-                ExposedDropdownMenu(expanded = styleExpanded, onDismissRequest = { styleExpanded = false }) {
-                    styles.forEach { style ->
-                        DropdownMenuItem(
-                            text = { Text(style) },
-                            onClick = { selectedStyle = style; styleExpanded = false }
-                        )
-                    }
+            )
+        }
+
+        // 方言快捷标签
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf("四川话", "粤语").forEach { dialect ->
+                OutlinedButton(onClick = { selectedStyle = dialect }) {
+                    Text(dialect, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            // 清除风格按钮
+            if (selectedStyle.isNotBlank()) {
+                TextButton(onClick = { selectedStyle = "" }) {
+                    Text("清除", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -396,6 +405,7 @@ fun TestScreen() {
                     }
                 }
             }
+        }
         }
     }
 }

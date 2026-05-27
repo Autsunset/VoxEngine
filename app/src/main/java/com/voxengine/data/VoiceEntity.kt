@@ -15,3 +15,12 @@ data class VoiceEntity(
     val engineId: String = "mimo",
     val createdAt: Long = System.currentTimeMillis()
 )
+
+data class VoiceListItem(
+    val id: Long,
+    val name: String,
+    val type: String,
+    val model: String,
+    val description: String,
+    val engineId: String
+)

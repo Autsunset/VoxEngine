@@ -65,4 +65,73 @@ object AudioUtils {
         }
         return wavData.copyOfRange(44, wavData.size)
     }
+
+    fun pcmToWav(pcmData: ByteArray, sampleRate: Int, channels: Int, bitsPerSample: Int): ByteArray {
+        val byteRate = sampleRate * channels * bitsPerSample / 8
+        val blockAlign = channels * bitsPerSample / 8
+        val dataSize = pcmData.size
+        val totalSize = 36 + dataSize
+
+        val wav = ByteArray(44 + dataSize)
+        // RIFF header
+        wav[0] = 'R'.code.toByte()
+        wav[1] = 'I'.code.toByte()
+        wav[2] = 'F'.code.toByte()
+        wav[3] = 'F'.code.toByte()
+        // File size
+        wav[4] = (totalSize and 0xFF).toByte()
+        wav[5] = ((totalSize shr 8) and 0xFF).toByte()
+        wav[6] = ((totalSize shr 16) and 0xFF).toByte()
+        wav[7] = ((totalSize shr 24) and 0xFF).toByte()
+        // WAVE
+        wav[8] = 'W'.code.toByte()
+        wav[9] = 'A'.code.toByte()
+        wav[10] = 'V'.code.toByte()
+        wav[11] = 'E'.code.toByte()
+        // fmt chunk
+        wav[12] = 'f'.code.toByte()
+        wav[13] = 'm'.code.toByte()
+        wav[14] = 't'.code.toByte()
+        wav[15] = ' '.code.toByte()
+        // fmt size (16 for PCM)
+        wav[16] = 16
+        wav[17] = 0
+        wav[18] = 0
+        wav[19] = 0
+        // Audio format (1 = PCM)
+        wav[20] = 1
+        wav[21] = 0
+        // Channels
+        wav[22] = (channels and 0xFF).toByte()
+        wav[23] = ((channels shr 8) and 0xFF).toByte()
+        // Sample rate
+        wav[24] = (sampleRate and 0xFF).toByte()
+        wav[25] = ((sampleRate shr 8) and 0xFF).toByte()
+        wav[26] = ((sampleRate shr 16) and 0xFF).toByte()
+        wav[27] = ((sampleRate shr 24) and 0xFF).toByte()
+        // Byte rate
+        wav[28] = (byteRate and 0xFF).toByte()
+        wav[29] = ((byteRate shr 8) and 0xFF).toByte()
+        wav[30] = ((byteRate shr 16) and 0xFF).toByte()
+        wav[31] = ((byteRate shr 24) and 0xFF).toByte()
+        // Block align
+        wav[32] = (blockAlign and 0xFF).toByte()
+        wav[33] = ((blockAlign shr 8) and 0xFF).toByte()
+        // Bits per sample
+        wav[34] = (bitsPerSample and 0xFF).toByte()
+        wav[35] = ((bitsPerSample shr 8) and 0xFF).toByte()
+        // data chunk
+        wav[36] = 'd'.code.toByte()
+        wav[37] = 'a'.code.toByte()
+        wav[38] = 't'.code.toByte()
+        wav[39] = 'a'.code.toByte()
+        // Data size
+        wav[40] = (dataSize and 0xFF).toByte()
+        wav[41] = ((dataSize shr 8) and 0xFF).toByte()
+        wav[42] = ((dataSize shr 16) and 0xFF).toByte()
+        wav[43] = ((dataSize shr 24) and 0xFF).toByte()
+        // PCM data
+        System.arraycopy(pcmData, 0, wav, 44, dataSize)
+        return wav
+    }
 }

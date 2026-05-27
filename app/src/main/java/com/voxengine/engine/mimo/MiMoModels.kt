@@ -4,6 +4,7 @@ import android.util.Base64
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
+import com.voxengine.util.LogManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -14,25 +15,39 @@ import java.util.concurrent.TimeUnit
 
 class MiMoTTSClient(
     private var baseUrl: String = "https://api.xiaomimimo.com",
-    private var apiKey: String = ""
+    private var apiKey: String = "",
+    private var userAgent: String = "openclaw/unknown"
 ) {
     private val gson = Gson()
-    private val client = OkHttpClient.Builder()
+    private var client = buildClient(userAgent)
+
+    private fun buildClient(ua: String) = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            val request = chain.request().newBuilder()
+                .header("User-Agent", ua)
+                .build()
+            chain.proceed(request)
+        }
         .build()
 
-    fun updateConfig(baseUrl: String, apiKey: String) {
+    fun updateConfig(baseUrl: String, apiKey: String, userAgent: String? = null) {
         this.baseUrl = baseUrl.trimEnd('/')
         this.apiKey = apiKey
+        if (userAgent != null && userAgent != this.userAgent) {
+            this.userAgent = userAgent
+            this.client = buildClient(userAgent)
+        }
     }
 
     suspend fun synthesize(
         text: String,
         voice: String,
         model: String = MODEL_PRESET,
-        style: String? = null
+        style: String? = null,
+        optimizeTextPreview: Boolean = false
     ): SynthesisResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
         // 风格标签放在 assistant 内容开头，格式：(风格)
@@ -43,25 +58,33 @@ class MiMoTTSClient(
         }
 
         // 根据模型类型构建不同的请求体
-        val (userContent, audioConfig) = when (model) {
+        val (userContent, assistantContent, audioConfig) = when (model) {
             MODEL_DESIGN -> {
-                // voicedesign: user = 音色描述，audio 不含 voice
-                Pair(voice, AudioConfig(format = "wav"))
+                if (optimizeTextPreview) {
+                    // optimizeTextPreview 模式：只需 user 描述，无需 assistant 文本
+                    Triple(voice, null, AudioConfig(format = "wav", optimizeTextPreview = true))
+                } else {
+                    Triple(voice, content, AudioConfig(format = "wav"))
+                }
             }
             MODEL_CLONE -> {
-                // voiceclone: user = 可选风格指令，audio.voice = base64 音频
-                Pair("", AudioConfig(format = "wav", voice = voice))
+                Pair("", AudioConfig(format = "wav", voice = voice)).let {
+                    Triple(it.first, content, it.second)
+                }
             }
             else -> {
-                // preset: user = 可选风格指令，audio.voice = 预设音色名
-                Pair("", AudioConfig(format = "wav", voice = voice))
+                Pair("", AudioConfig(format = "wav", voice = voice)).let {
+                    Triple(it.first, content, it.second)
+                }
             }
         }
 
         val messages = mutableListOf(
-            Message(role = "user", content = userContent),
-            Message(role = "assistant", content = content)
+            Message(role = "user", content = userContent)
         )
+        if (assistantContent != null) {
+            messages.add(Message(role = "assistant", content = assistantContent))
+        }
 
         val request = TTSRequest(
             model = model,
@@ -71,6 +94,7 @@ class MiMoTTSClient(
 
         val json = gson.toJson(request)
         Log.d(TAG, "Request model=$model voice=$voice json=$json")
+        LogManager.appendLog("D", TAG, "Request model=$model voice=$voice json=$json")
 
         val httpRequest = Request.Builder()
             .url("$baseUrl/v1/chat/completions")
@@ -122,7 +146,7 @@ class MiMoTTSClient(
         val PRESET_VOICES = listOf(
             VoiceInfo("冰糖", "冰糖", "甜美可爱女声", MODEL_PRESET),
             VoiceInfo("茉莉", "茉莉", "温柔知性女声", MODEL_PRESET),
-            VoiceInfo("苏打", "苏打", "活力阳光女声", MODEL_PRESET),
+            VoiceInfo("苏打", "苏打", "活力阳光男声", MODEL_PRESET),
             VoiceInfo("白桦", "白桦", "沉稳磁性男声", MODEL_PRESET),
             VoiceInfo("Mia", "Mia", "英文女声", MODEL_PRESET),
             VoiceInfo("Chloe", "Chloe", "英文女声", MODEL_PRESET),
@@ -146,7 +170,9 @@ data class Message(
 
 data class AudioConfig(
     val format: String = "wav",
-    val voice: String? = null
+    val voice: String? = null,
+    @SerializedName("optimize_text_preview")
+    val optimizeTextPreview: Boolean? = null
 )
 
 data class TTSResponse(

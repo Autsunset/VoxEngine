@@ -73,3 +73,5 @@ Thumbs.db
 # APK copies in root directory
 /VoxEngine-*.apk
 /MiMoTTS-*.apk
+*.jks
+voxengine.jks

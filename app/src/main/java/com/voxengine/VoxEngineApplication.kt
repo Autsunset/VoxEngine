@@ -6,6 +6,7 @@ import com.voxengine.engine.EngineRegistry
 import com.voxengine.engine.edge.EdgeTTSEngine
 import com.voxengine.engine.mimo.MiMoEngine
 import com.voxengine.engine.openai.OpenAIEngine
+import com.voxengine.util.LogManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,6 +19,7 @@ class VoxEngineApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        LogManager.init(this)
         registerEngines()
     }
 

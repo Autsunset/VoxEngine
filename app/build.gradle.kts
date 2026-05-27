@@ -13,15 +13,25 @@ android {
         applicationId = "com.voxengine"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("../voxengine.jks")
+            storePassword = System.getenv("RELEASE_STORE_PASSWORD") ?: "voxengine123"
+            keyAlias = System.getenv("RELEASE_KEY_ALIAS") ?: "voxengine"
+            keyPassword = System.getenv("RELEASE_KEY_PASSWORD") ?: "voxengine123"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

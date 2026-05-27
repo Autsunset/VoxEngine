@@ -1,5 +1,7 @@
 package com.voxengine.ui.screens
 
+import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,20 +20,31 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.voxengine.data.AppDatabase
@@ -62,6 +75,7 @@ fun SettingsScreen() {
     val speed by settings.speed.collectAsState(initial = 1.0f)
     val darkMode by settings.darkMode.collectAsState(initial = false)
     val currentEngineId by settings.currentEngine.collectAsState(initial = "mimo")
+    val parallelSynthesis by settings.parallelSynthesis.collectAsState(initial = false)
 
     var baseUrlInput by remember { mutableStateOf(baseUrl) }
     var apiKeyInput by remember { mutableStateOf(apiKey) }
@@ -69,16 +83,21 @@ fun SettingsScreen() {
     var styleExpanded by remember { mutableStateOf(false) }
     var engineExpanded by remember { mutableStateOf(false) }
     var presetExpanded by remember { mutableStateOf(false) }
+    var apiKeyVisible by remember { mutableStateOf(false) }
+
+    // 同步输入框与 DataStore 值
+    LaunchedEffect(baseUrl) { baseUrlInput = baseUrl }
+    LaunchedEffect(apiKey) { apiKeyInput = apiKey }
 
     val activeEngine = EngineRegistry.get(currentEngineId)
     
     // 预设音色
-    val presetVoices = remember(activeEngine) {
-        kotlinx.coroutines.runBlocking { activeEngine?.getVoices() ?: emptyList() }
+    val presetVoices by produceState(initialValue = emptyList(), activeEngine) {
+        value = activeEngine?.getVoices() ?: emptyList()
     }
     
     // 自定义音色（从数据库加载）
-    val customVoices by db.voiceDao().getVoicesByEngine(currentEngineId).collectAsState(initial = emptyList())
+    val customVoices by db.voiceDao().getVoiceItemsByEngine(currentEngineId).collectAsState(initial = emptyList())
     
     // 合并所有音色
     val allVoices = remember(presetVoices, customVoices) {
@@ -95,20 +114,28 @@ fun SettingsScreen() {
         presetVoices + customAsPreset
     }
     
-    val styles = remember(activeEngine) {
-        kotlinx.coroutines.runBlocking { activeEngine?.getStyles() ?: emptyList() }
+    val styles by produceState(initialValue = emptyList<String>(), activeEngine) {
+        value = activeEngine?.getStyles() ?: emptyList()
     }
 
     // 当前选中的预设计费模式
     val currentPreset = MIMO_API_PRESETS.find { it.second == baseUrl }?.first ?: "自定义"
+    val currentPresetDisplay = if (currentPreset == "按量计费") "$currentPreset（限时免费，具体以小米官方为准）" else currentPreset
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp)
-    ) {
-        TopAppBar(title = { Text("VoxEngine 设置") })
+    var userAgentInput by remember { mutableStateOf("") }
+    val userAgent by settings.userAgent.collectAsState(initial = "openclaw/unknown")
+    LaunchedEffect(userAgent) { userAgentInput = userAgent }
+
+    Scaffold(
+        topBar = { TopAppBar(title = { Text("VoxEngine 设置") }) }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(padding)
+                .padding(16.dp)
+        ) {
 
         // 深色模式
         Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
@@ -123,6 +150,31 @@ fun SettingsScreen() {
                     onCheckedChange = { enabled ->
                         scope.launch { settings.updateDarkMode(enabled) }
                     }
+                )
+            }
+        }
+
+        // 并行合成模式
+        Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("并行合成")
+                    Switch(
+                        checked = parallelSynthesis,
+                        onCheckedChange = { enabled ->
+                            scope.launch { settings.updateParallelSynthesis(enabled) }
+                        }
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "将长文本拆成短句并行请求，可减少段间等待时间。\n默认关闭，使用整段请求模式。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -183,7 +235,7 @@ fun SettingsScreen() {
                         onExpandedChange = { presetExpanded = it }
                     ) {
                         OutlinedTextField(
-                            value = currentPreset,
+                            value = currentPresetDisplay,
                             onValueChange = {},
                             readOnly = true,
                             label = { Text("计费模式") },
@@ -208,7 +260,7 @@ fun SettingsScreen() {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "💡 Token Plan 需要使用 tp-xxxxx 格式的 API Key",
+                        "💡 按量计费使用 sk-xxxxx 格式 API Key（限时免费）\n💡 Token Plan 使用 tp-xxxxx 格式 API Key",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -229,16 +281,57 @@ fun SettingsScreen() {
                     onValueChange = { apiKeyInput = it },
                     label = { Text("API Key") },
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+                    singleLine = true,
+                    visualTransformation = if (apiKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
+                            Icon(
+                                imageVector = if (apiKeyVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (apiKeyVisible) "隐藏" else "显示"
+                            )
+                        }
+                    }
                 )
                 Spacer(Modifier.height(8.dp))
 
-                Button(onClick = {
-                    scope.launch {
-                        settings.updateBaseUrl(baseUrlInput)
-                        settings.updateApiKey(apiKeyInput)
-                    }
-                }) { Text("保存 API 配置") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
+                        scope.launch {
+                            settings.updateBaseUrl(baseUrlInput)
+                            settings.updateApiKey(apiKeyInput)
+                            settings.updateUserAgent(userAgentInput.ifBlank { "openclaw/unknown" })
+                        }
+                    }) { Text("保存 API 配置") }
+
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            settings.updateBaseUrl("https://api.xiaomimimo.com")
+                            settings.updateApiKey("")
+                            settings.updateUserAgent("openclaw/unknown")
+                        }
+                    }) { Text("清除配置") }
+                }
+            }
+        }
+
+        // 自定义 User-Agent
+        Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("自定义请求头", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = userAgentInput,
+                    onValueChange = { userAgentInput = it },
+                    label = { Text("User-Agent") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "默认使用 openclaw/unknown，用于伪装客户端身份",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
 
@@ -352,6 +445,33 @@ fun SettingsScreen() {
             }
         }
 
+        // 系统 TTS 设置
+        Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("系统 TTS 设置", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "跳转到系统文字转语音设置页面，将 VoxEngine 设为首选引擎",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Button(onClick = {
+                    try {
+                        val intent = Intent("com.android.settings.TTS_SETTINGS")
+                        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        context.startActivity(intent)
+                    } catch (_: Exception) {
+                        Toast.makeText(context, "无法打开系统 TTS 设置", Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text("前往设置") }
+            }
+        }
+
         // 使用说明
         Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
             Column(modifier = Modifier.padding(16.dp)) {
@@ -365,6 +485,7 @@ fun SettingsScreen() {
                     style = MaterialTheme.typography.bodySmall
                 )
             }
+        }
         }
     }
 }

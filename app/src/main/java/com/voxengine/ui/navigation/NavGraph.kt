@@ -3,6 +3,7 @@ package com.voxengine.ui.navigation
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material3.Icon
@@ -20,6 +21,8 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.voxengine.ui.screens.AboutScreen
+import com.voxengine.ui.screens.LogScreen
 import com.voxengine.ui.screens.SettingsScreen
 import com.voxengine.ui.screens.TestScreen
 import com.voxengine.ui.screens.VoiceManageScreen
@@ -29,7 +32,8 @@ data class BottomNavItem(val screen: Screen, val icon: ImageVector)
 val bottomNavItems = listOf(
     BottomNavItem(Screen.Settings, Icons.Default.Home),
     BottomNavItem(Screen.VoiceManage, Icons.Default.RecordVoiceOver),
-    BottomNavItem(Screen.Test, Icons.Default.Mic)
+    BottomNavItem(Screen.Test, Icons.Default.Mic),
+    BottomNavItem(Screen.About, Icons.Default.Info)
 )
 
 @Composable
@@ -69,6 +73,8 @@ fun MainNavGraph() {
             composable(Screen.Settings.route) { SettingsScreen() }
             composable(Screen.VoiceManage.route) { VoiceManageScreen() }
             composable(Screen.Test.route) { TestScreen() }
+            composable(Screen.About.route) { AboutScreen(navController) }
+            composable(Screen.Log.route) { LogScreen() }
         }
     }
 }

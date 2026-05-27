@@ -10,7 +10,8 @@ interface TTSEngine {
     suspend fun synthesize(
         text: String,
         voice: String,
-        style: String? = null
+        style: String? = null,
+        optimizeTextPreview: Boolean = false
     ): SynthesisResult
 
     suspend fun getVoices(): List<VoiceInfo>
