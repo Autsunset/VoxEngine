@@ -17,6 +17,7 @@ class VoxEngineTTSService : TextToSpeechService() {
     private var settings: SettingsRepository? = null
     private var currentVoice = "冰糖"
     private var currentStyle = "无"
+    private var currentSpeed = 1.0f
 
     override fun onCreate() {
         super.onCreate()
@@ -27,6 +28,7 @@ class VoxEngineTTSService : TextToSpeechService() {
             val engineId = runBlocking { s.currentEngine.first() }
             currentVoice = runBlocking { s.defaultVoice.first() }
             currentStyle = runBlocking { s.defaultStyle.first() }
+            currentSpeed = runBlocking { s.speed.first() }
 
             if (!EngineRegistry.isRegistered(engineId)) {
                 val engine = MiMoEngine(s)
@@ -56,9 +58,14 @@ class VoxEngineTTSService : TextToSpeechService() {
             val engineId = runBlocking { s.currentEngine.first() }
             val engine = EngineRegistry.getActive(engineId)
 
+            // 刷新配置
+            currentVoice = runBlocking { s.defaultVoice.first() }
+            currentStyle = runBlocking { s.defaultStyle.first() }
+            currentSpeed = runBlocking { s.speed.first() }
+
             val style = if (currentStyle == "无") null else currentStyle
             val result = runBlocking {
-                engine.synthesize(text, currentVoice, style)
+                engine.synthesize(text, currentVoice, style, currentSpeed)
             }
 
             val sampleRate = AudioUtils.getWavSampleRate(result.audioData)

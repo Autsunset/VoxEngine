@@ -3,6 +3,7 @@ package com.voxengine.ui.screens
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,8 +12,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -20,11 +25,14 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -34,15 +42,21 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.voxengine.audio.AudioUtils
+import com.voxengine.data.AppDatabase
 import com.voxengine.data.SettingsRepository
+import com.voxengine.data.SynthesisHistoryEntity
 import com.voxengine.engine.EngineRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,6 +64,7 @@ fun TestScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val settings = remember { SettingsRepository(context) }
+    val db = remember { AppDatabase.getDatabase(context) }
 
     val currentEngineId by settings.currentEngine.collectAsState(initial = "mimo")
     val apiKey by settings.apiKey.collectAsState(initial = "")
@@ -62,6 +77,9 @@ fun TestScreen() {
     val styles = remember(activeEngine) {
         kotlinx.coroutines.runBlocking { activeEngine?.getStyles() ?: emptyList() }
     }
+    
+    // 合成历史
+    val history by db.synthesisHistoryDao().getRecent(10).collectAsState(initial = emptyList())
 
     var text by remember { mutableStateOf("你好，欢迎使用 VoxEngine 语音合成引擎！") }
     var selectedVoice by remember { mutableStateOf("冰糖") }
@@ -73,7 +91,6 @@ fun TestScreen() {
     var styleExpanded by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("") }
 
-    // 检查 API Key 是否配置
     val isConfigured = apiKey.isNotBlank()
 
     Column(
@@ -212,6 +229,17 @@ fun TestScreen() {
                         elapsedMs = result.elapsedMs
                         statusText = "合成完成 (${elapsedMs}ms)，播放中..."
 
+                        // 保存到历史记录
+                        db.synthesisHistoryDao().insert(
+                            SynthesisHistoryEntity(
+                                text = text,
+                                voice = selectedVoice,
+                                style = selectedStyle,
+                                speed = speed,
+                                engineId = currentEngineId
+                            )
+                        )
+
                         withContext(Dispatchers.IO) {
                             playAudio(result.audioData)
                         }
@@ -240,6 +268,63 @@ fun TestScreen() {
                     Text("状态: $statusText")
                     if (elapsedMs > 0) {
                         Text("耗时: ${elapsedMs}ms")
+                    }
+                }
+            }
+        }
+
+        // 合成历史
+        if (history.isNotEmpty()) {
+            Spacer(Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("最近记录", style = MaterialTheme.typography.titleMedium)
+                TextButton(onClick = {
+                    scope.launch { db.synthesisHistoryDao().deleteAll() }
+                }) {
+                    Text("清除全部")
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            
+            history.forEach { record ->
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable {
+                        text = record.text
+                        selectedVoice = record.voice
+                        selectedStyle = record.style ?: "无"
+                        speed = record.speed
+                    }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp).fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                record.text.take(50) + if (record.text.length > 50) "..." else "",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Text(
+                                "${record.voice} | ${record.style ?: "无"} | ${String.format("%.1f", record.speed)}x",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(record.timestamp)),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(onClick = {
+                            scope.launch { db.synthesisHistoryDao().deleteById(record.id) }
+                        }) {
+                            Icon(Icons.Default.Delete, "删除", modifier = Modifier.padding(4.dp))
+                        }
                     }
                 }
             }

@@ -6,6 +6,7 @@ import com.voxengine.audio.AudioUtils
 import com.voxengine.data.AppDatabase
 import com.voxengine.data.SettingsRepository
 import com.voxengine.data.VoiceEntity
+import com.voxengine.engine.AudioCache
 import com.voxengine.engine.AudioFormat
 import com.voxengine.engine.EngineRegistry
 import com.voxengine.engine.TTSEngine
@@ -49,6 +50,19 @@ class MiMoEngine(
         style: String?,
         speed: Float
     ): SynthesisResult {
+        // 检查缓存
+        val cacheKey = AudioCache.generateKey(text, voice, style, speed)
+        val cachedAudio = AudioCache.get(cacheKey)
+        if (cachedAudio != null) {
+            Log.d(TAG, "Cache hit for key: $cacheKey")
+            return SynthesisResult(
+                audioData = cachedAudio,
+                format = AudioFormat.WAV,
+                sampleRate = AudioUtils.getWavSampleRate(cachedAudio),
+                elapsedMs = 0
+            )
+        }
+
         val c = getClient()
         
         // 检查是否是自定义音色（clone 或 design）
@@ -87,6 +101,9 @@ class MiMoEngine(
             // 预设音色
             c.synthesize(text, voice, MiMoTTSClient.MODEL_PRESET, style, speed)
         }
+        
+        // 存入缓存
+        AudioCache.put(cacheKey, mimoResult.audioData)
         
         return SynthesisResult(
             audioData = mimoResult.audioData,

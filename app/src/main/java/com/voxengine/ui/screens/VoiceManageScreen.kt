@@ -1,5 +1,8 @@
 package com.voxengine.ui.screens
 
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -11,13 +14,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -39,10 +45,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.voxengine.audio.AudioUtils
 import com.voxengine.data.AppDatabase
 import com.voxengine.data.VoiceEntity
 import com.voxengine.engine.EngineRegistry
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -61,6 +70,8 @@ fun VoiceManageScreen() {
 
     var showAddDialog by remember { mutableStateOf(false) }
     var showDesignDialog by remember { mutableStateOf(false) }
+    var previewingVoice by remember { mutableStateOf<String?>(null) }
+    var isPlaying by remember { mutableStateOf(false) }
     val supportsClone = activeEngine?.supportsVoiceClone ?: false
     val supportsDesign = activeEngine?.supportsVoiceDesign ?: false
 
@@ -99,9 +110,36 @@ fun VoiceManageScreen() {
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(voice.name, style = MaterialTheme.typography.bodyLarge)
                             Text(voice.description, style = MaterialTheme.typography.bodySmall)
+                        }
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    previewingVoice = voice.name
+                                    isPlaying = true
+                                    try {
+                                        val engine = EngineRegistry.getActive(currentEngineId)
+                                        val result = withContext(Dispatchers.IO) {
+                                            engine.synthesize("你好，我是${voice.name}，这是试听。", voice.name)
+                                        }
+                                        playAudio(result.audioData)
+                                    } catch (e: Exception) {
+                                        // ignore
+                                    } finally {
+                                        isPlaying = false
+                                        previewingVoice = null
+                                    }
+                                }
+                            },
+                            enabled = !isPlaying
+                        ) {
+                            if (previewingVoice == voice.name && isPlaying) {
+                                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                            } else {
+                                Icon(Icons.Default.PlayArrow, "试听")
+                            }
                         }
                     }
                 }
@@ -126,6 +164,33 @@ fun VoiceManageScreen() {
                                     if (voice.type == "clone") "克隆音色" else "设计: ${voice.description}",
                                     style = MaterialTheme.typography.bodySmall
                                 )
+                            }
+                            IconButton(
+                                onClick = {
+                                    scope.launch {
+                                        previewingVoice = voice.name
+                                        isPlaying = true
+                                        try {
+                                            val engine = EngineRegistry.getActive(currentEngineId)
+                                            val result = withContext(Dispatchers.IO) {
+                                                engine.synthesize("你好，这是试听。", voice.name)
+                                            }
+                                            playAudio(result.audioData)
+                                        } catch (e: Exception) {
+                                            // ignore
+                                        } finally {
+                                            isPlaying = false
+                                            previewingVoice = null
+                                        }
+                                    }
+                                },
+                                enabled = !isPlaying
+                            ) {
+                                if (previewingVoice == voice.name && isPlaying) {
+                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                } else {
+                                    Icon(Icons.Default.PlayArrow, "试听")
+                                }
                             }
                             IconButton(onClick = {
                                 scope.launch { db.voiceDao().delete(voice) }
@@ -252,4 +317,40 @@ fun DesignVoiceDialog(onDismiss: () -> Unit, onSave: (String, String) -> Unit) {
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
+}
+
+private suspend fun playAudio(wavData: ByteArray) = withContext(Dispatchers.IO) {
+    val sampleRate = AudioUtils.getWavSampleRate(wavData)
+    val channelCount = AudioUtils.getWavChannelCount(wavData)
+    val bitsPerSample = AudioUtils.getWavBitsPerSample(wavData)
+    val pcmData = AudioUtils.extractPcmData(wavData)
+
+    val channelConfig = if (channelCount == 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
+    val encoding = if (bitsPerSample == 16) AudioFormat.ENCODING_PCM_16BIT else AudioFormat.ENCODING_PCM_8BIT
+
+    val bufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, encoding)
+    val track = AudioTrack.Builder()
+        .setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+        )
+        .setAudioFormat(
+            AudioFormat.Builder()
+                .setSampleRate(sampleRate)
+                .setChannelMask(channelConfig)
+                .setEncoding(encoding)
+                .build()
+        )
+        .setBufferSizeInBytes(maxOf(bufferSize, pcmData.size))
+        .setTransferMode(AudioTrack.MODE_STATIC)
+        .build()
+
+    track.write(pcmData, 0, pcmData.size)
+    track.play()
+    while (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+        Thread.sleep(50)
+    }
+    track.release()
 }
