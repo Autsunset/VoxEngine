@@ -114,7 +114,7 @@ class MiMoEngine(
     }
 
     override suspend fun getVoices(): List<EngineVoiceInfo> {
-        return MiMoTTSClient.PRESET_VOICES.map {
+        val presetVoices = MiMoTTSClient.PRESET_VOICES.map {
             EngineVoiceInfo(
                 id = it.id,
                 name = it.name,
@@ -123,6 +123,25 @@ class MiMoEngine(
                 engineId = id
             )
         }
+        
+        // 加载自定义音色（克隆 + 设计）
+        val db = AppDatabase.getDatabase(com.voxengine.VoxEngineApplication.instance)
+        val customVoices = db.voiceDao().getAllVoices().first().map { entity ->
+            val type = when (entity.type) {
+                "clone" -> VoiceType.CLONE
+                "design" -> VoiceType.DESIGN
+                else -> VoiceType.PRESET
+            }
+            EngineVoiceInfo(
+                id = entity.name,  // 用 name 作为 ID，synthesize 里通过 name 匹配
+                name = entity.name,
+                description = entity.description.ifEmpty { if (type == VoiceType.CLONE) "克隆音色" else "设计音色" },
+                type = type,
+                engineId = id
+            )
+        }
+        
+        return presetVoices + customVoices
     }
 
     override suspend fun getStyles(): List<String> {

@@ -90,6 +90,7 @@ fun TestScreen() {
     var selectedStyle by remember { mutableStateOf("无") }
     var speed by remember { mutableFloatStateOf(1.0f) }
     var isSynthesizing by remember { mutableStateOf(false) }
+    var isPlaying by remember { mutableStateOf(false) }
     var elapsedMs by remember { mutableStateOf(0L) }
     var voiceExpanded by remember { mutableStateOf(false) }
     var styleExpanded by remember { mutableStateOf(false) }
@@ -234,11 +235,12 @@ fun TestScreen() {
                     try {
                         val engine = activeEngine ?: throw IllegalStateException("未选择引擎")
                         val result = withContext(Dispatchers.IO) {
-                            // 使用 voice.id 调用 API（bingtang/baihua 等）
                             engine.synthesize(text, selectedVoiceId, selectedStyle, speed)
                         }
                         elapsedMs = result.elapsedMs
+                        isSynthesizing = false
                         statusText = "合成完成 (${elapsedMs}ms)，播放中..."
+                        isPlaying = true
 
                         // 保存到历史记录
                         db.synthesisHistoryDao().insert(
@@ -259,16 +261,21 @@ fun TestScreen() {
                         statusText = "错误: ${e.message}"
                     } finally {
                         isSynthesizing = false
+                        isPlaying = false
                     }
                 }
             },
-            enabled = !isSynthesizing && text.isNotBlank() && isConfigured,
+            enabled = !isSynthesizing && !isPlaying && text.isNotBlank() && isConfigured,
             modifier = Modifier.fillMaxWidth()
         ) {
-            if (isSynthesizing) {
+            if (isSynthesizing || isPlaying) {
                 CircularProgressIndicator(modifier = Modifier.padding(end = 8.dp))
             }
-            Text(if (isSynthesizing) "合成中..." else "合成并播放")
+            Text(when {
+                isSynthesizing -> "合成中..."
+                isPlaying -> "播放中..."
+                else -> "合成并播放"
+            })
         }
 
         Spacer(Modifier.height(12.dp))
