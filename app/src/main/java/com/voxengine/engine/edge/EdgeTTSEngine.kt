@@ -19,8 +19,7 @@ class EdgeTTSEngine(
     override suspend fun synthesize(
         text: String,
         voice: String,
-        style: String?,
-        speed: Float
+        style: String?
     ): SynthesisResult {
         throw NotImplementedError("Edge TTS 引擎开发中")
     }

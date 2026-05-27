@@ -235,7 +235,7 @@ fun TestScreen() {
                     try {
                         val engine = activeEngine ?: throw IllegalStateException("未选择引擎")
                         val result = withContext(Dispatchers.IO) {
-                            engine.synthesize(text, selectedVoiceId, selectedStyle, speed)
+                            engine.synthesize(text, selectedVoiceId, selectedStyle)
                         }
                         elapsedMs = result.elapsedMs
                         isSynthesizing = false

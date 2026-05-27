@@ -32,12 +32,12 @@ class MiMoTTSClient(
         text: String,
         voice: String,
         model: String = MODEL_PRESET,
-        style: String? = null,
-        speed: Float = 1.0f
+        style: String? = null
     ): SynthesisResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
+        // 风格标签放在 assistant 内容开头，格式：(风格)
         val content = if (style != null && style != "无") {
-            "[$style]$text"
+            "($style)$text"
         } else {
             text
         }
@@ -48,18 +48,18 @@ class MiMoTTSClient(
                 Message(role = "user", content = ""),
                 Message(role = "assistant", content = content)
             ),
-            extraBody = ExtraBody(
-                voice = voice,
-                speed = speed
+            audio = AudioConfig(
+                format = "wav",
+                voice = voice
             )
         )
 
         val json = gson.toJson(request)
-        Log.d(TAG, "Request model=$model voice=$voice speed=$speed")
+        Log.d(TAG, "Request model=$model voice=$voice json=$json")
 
         val httpRequest = Request.Builder()
             .url("$baseUrl/v1/chat/completions")
-            .addHeader("Authorization", "Bearer $apiKey")
+            .addHeader("api-key", apiKey)
             .addHeader("Content-Type", "application/json")
             .post(json.toRequestBody("application/json".toMediaType()))
             .build()
@@ -105,14 +105,14 @@ class MiMoTTSClient(
         const val MODEL_DESIGN = "mimo-v2.5-tts-voicedesign"
 
         val PRESET_VOICES = listOf(
-            VoiceInfo("bingtang", "冰糖", "甜美可爱女声", MODEL_PRESET),
-            VoiceInfo("moli", "茉莉", "温柔知性女声", MODEL_PRESET),
-            VoiceInfo("suda", "苏打", "活力阳光女声", MODEL_PRESET),
-            VoiceInfo("baihua", "白桦", "沉稳磁性男声", MODEL_PRESET),
-            VoiceInfo("mia", "Mia", "英文女声", MODEL_PRESET),
-            VoiceInfo("chloe", "Chloe", "英文女声", MODEL_PRESET),
-            VoiceInfo("milo", "Milo", "英文男声", MODEL_PRESET),
-            VoiceInfo("dean", "Dean", "英文男声", MODEL_PRESET)
+            VoiceInfo("冰糖", "冰糖", "甜美可爱女声", MODEL_PRESET),
+            VoiceInfo("茉莉", "茉莉", "温柔知性女声", MODEL_PRESET),
+            VoiceInfo("苏打", "苏打", "活力阳光女声", MODEL_PRESET),
+            VoiceInfo("白桦", "白桦", "沉稳磁性男声", MODEL_PRESET),
+            VoiceInfo("Mia", "Mia", "英文女声", MODEL_PRESET),
+            VoiceInfo("Chloe", "Chloe", "英文女声", MODEL_PRESET),
+            VoiceInfo("Milo", "Milo", "英文男声", MODEL_PRESET),
+            VoiceInfo("Dean", "Dean", "英文男声", MODEL_PRESET)
         )
     }
 }
@@ -121,7 +121,7 @@ data class TTSRequest(
     val model: String,
     val stream: Boolean = false,
     val messages: List<Message>,
-    @SerializedName("extra_body") val extraBody: ExtraBody
+    val audio: AudioConfig
 )
 
 data class Message(
@@ -129,10 +129,9 @@ data class Message(
     val content: String
 )
 
-data class ExtraBody(
-    @SerializedName("audio_format") val audioFormat: String = "wav",
-    val voice: String,
-    val speed: Float = 1.0f
+data class AudioConfig(
+    val format: String = "wav",
+    val voice: String
 )
 
 data class TTSResponse(

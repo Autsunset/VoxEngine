@@ -21,8 +21,8 @@ object AudioCache {
     /**
      * 生成缓存键
      */
-    fun generateKey(text: String, voice: String, style: String?, speed: Float): String {
-        val raw = "$text|$voice|${style ?: ""}|$speed"
+    fun generateKey(text: String, voice: String, style: String?): String {
+        val raw = "$text|$voice|${style ?: ""}"
         return md5(raw)
     }
 

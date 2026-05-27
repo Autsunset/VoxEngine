@@ -19,8 +19,7 @@ class OpenAIEngine(
     override suspend fun synthesize(
         text: String,
         voice: String,
-        style: String?,
-        speed: Float
+        style: String?
     ): SynthesisResult {
         throw NotImplementedError("OpenAI TTS 引擎开发中")
     }

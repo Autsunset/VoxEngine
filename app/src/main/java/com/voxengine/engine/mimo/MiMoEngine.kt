@@ -47,11 +47,10 @@ class MiMoEngine(
     override suspend fun synthesize(
         text: String,
         voice: String,
-        style: String?,
-        speed: Float
+        style: String?
     ): SynthesisResult {
         // 检查缓存
-        val cacheKey = AudioCache.generateKey(text, voice, style, speed)
+        val cacheKey = AudioCache.generateKey(text, voice, style)
         val cachedAudio = AudioCache.get(cacheKey)
         if (cachedAudio != null) {
             Log.d(TAG, "Cache hit for key: $cacheKey")
@@ -78,8 +77,7 @@ class MiMoEngine(
                         text = text,
                         voice = customVoice.voiceParam,
                         model = MiMoTTSClient.MODEL_CLONE,
-                        style = style,
-                        speed = speed
+                        style = style
                     )
                 }
                 "design" -> {
@@ -88,18 +86,17 @@ class MiMoEngine(
                         text = text,
                         voice = customVoice.voiceParam,
                         model = MiMoTTSClient.MODEL_DESIGN,
-                        style = style,
-                        speed = speed
+                        style = style
                     )
                 }
                 else -> {
                     // 预设音色
-                    c.synthesize(text, voice, MiMoTTSClient.MODEL_PRESET, style, speed)
+                    c.synthesize(text, voice, MiMoTTSClient.MODEL_PRESET, style)
                 }
             }
         } else {
             // 预设音色
-            c.synthesize(text, voice, MiMoTTSClient.MODEL_PRESET, style, speed)
+            c.synthesize(text, voice, MiMoTTSClient.MODEL_PRESET, style)
         }
         
         // 存入缓存

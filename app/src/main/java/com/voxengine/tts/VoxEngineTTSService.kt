@@ -65,7 +65,7 @@ class VoxEngineTTSService : TextToSpeechService() {
 
             val style = if (currentStyle == "无") null else currentStyle
             val result = runBlocking {
-                engine.synthesize(text, currentVoice, style, currentSpeed)
+                engine.synthesize(text, currentVoice, style)
             }
 
             val sampleRate = AudioUtils.getWavSampleRate(result.audioData)
