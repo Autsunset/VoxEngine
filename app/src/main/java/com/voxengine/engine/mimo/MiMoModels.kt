@@ -1,0 +1,152 @@
+package com.voxengine.engine.mimo
+
+import android.util.Base64
+import android.util.Log
+import com.google.gson.Gson
+import com.google.gson.annotations.SerializedName
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
+
+class MiMoTTSClient(
+    private var baseUrl: String = "https://api.xiaomimimo.com",
+    private var apiKey: String = ""
+) {
+    private val gson = Gson()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    fun updateConfig(baseUrl: String, apiKey: String) {
+        this.baseUrl = baseUrl.trimEnd('/')
+        this.apiKey = apiKey
+    }
+
+    suspend fun synthesize(
+        text: String,
+        voice: String,
+        model: String = MODEL_PRESET,
+        style: String? = null,
+        speed: Float = 1.0f
+    ): SynthesisResult = withContext(Dispatchers.IO) {
+        val startTime = System.currentTimeMillis()
+        val content = if (style != null && style != "无") {
+            "[$style]$text"
+        } else {
+            text
+        }
+
+        val request = TTSRequest(
+            model = model,
+            messages = listOf(
+                Message(role = "user", content = ""),
+                Message(role = "assistant", content = content)
+            ),
+            extraBody = ExtraBody(
+                voice = voice,
+                speed = speed
+            )
+        )
+
+        val json = gson.toJson(request)
+        Log.d(TAG, "Request model=$model voice=$voice speed=$speed")
+
+        val httpRequest = Request.Builder()
+            .url("$baseUrl/v1/chat/completions")
+            .addHeader("Authorization", "Bearer $apiKey")
+            .addHeader("Content-Type", "application/json")
+            .post(json.toRequestBody("application/json".toMediaType()))
+            .build()
+
+        val response = client.newCall(httpRequest).execute()
+        val body = response.body?.string() ?: throw Exception("Empty response")
+
+        if (!response.isSuccessful) {
+            throw Exception("API error ${response.code}: $body")
+        }
+
+        val ttsResponse = gson.fromJson(body, TTSResponse::class.java)
+        val audioBase64 = ttsResponse.choices.firstOrNull()?.message?.audio?.data
+            ?: throw Exception("No audio data in response")
+
+        val audioBytes = Base64.decode(audioBase64, Base64.DEFAULT)
+        val elapsed = System.currentTimeMillis() - startTime
+
+        SynthesisResult(
+            audioData = audioBytes,
+            format = "wav",
+            elapsedMs = elapsed
+        )
+    }
+
+    data class SynthesisResult(
+        val audioData: ByteArray,
+        val format: String,
+        val elapsedMs: Long
+    )
+
+    data class VoiceInfo(
+        val id: String,
+        val name: String,
+        val description: String,
+        val model: String
+    )
+
+    companion object {
+        private const val TAG = "MiMoTTSClient"
+        const val MODEL_PRESET = "mimo-v2.5-tts"
+        const val MODEL_CLONE = "mimo-v2.5-tts-voiceclone"
+        const val MODEL_DESIGN = "mimo-v2.5-tts-voicedesign"
+
+        val PRESET_VOICES = listOf(
+            VoiceInfo("bingtang", "冰糖", "甜美可爱女声", MODEL_PRESET),
+            VoiceInfo("moli", "茉莉", "温柔知性女声", MODEL_PRESET),
+            VoiceInfo("suda", "苏打", "活力阳光女声", MODEL_PRESET),
+            VoiceInfo("baihua", "白桦", "沉稳磁性男声", MODEL_PRESET),
+            VoiceInfo("mia", "Mia", "英文女声", MODEL_PRESET),
+            VoiceInfo("chloe", "Chloe", "英文女声", MODEL_PRESET),
+            VoiceInfo("milo", "Milo", "英文男声", MODEL_PRESET),
+            VoiceInfo("dean", "Dean", "英文男声", MODEL_PRESET)
+        )
+    }
+}
+
+data class TTSRequest(
+    val model: String,
+    val stream: Boolean = false,
+    val messages: List<Message>,
+    @SerializedName("extra_body") val extraBody: ExtraBody
+)
+
+data class Message(
+    val role: String,
+    val content: String
+)
+
+data class ExtraBody(
+    @SerializedName("audio_format") val audioFormat: String = "wav",
+    val voice: String,
+    val speed: Float = 1.0f
+)
+
+data class TTSResponse(
+    val choices: List<Choice>
+)
+
+data class Choice(
+    val message: ResponseMessage
+)
+
+data class ResponseMessage(
+    val audio: AudioData?
+)
+
+data class AudioData(
+    val data: String
+)

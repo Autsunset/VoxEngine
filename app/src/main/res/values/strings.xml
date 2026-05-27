@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VoxEngine</string>
+    <string name="tts_engine_label">VoxEngine TTS</string>
+    <string name="channel_bridge">Bridge Service</string>
+    <string name="channel_bridge_desc">HTTP Bridge Server 运行中</string>
+</resources>
