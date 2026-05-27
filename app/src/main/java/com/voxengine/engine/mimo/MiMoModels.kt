@@ -42,16 +42,31 @@ class MiMoTTSClient(
             text
         }
 
+        // 根据模型类型构建不同的请求体
+        val (userContent, audioConfig) = when (model) {
+            MODEL_DESIGN -> {
+                // voicedesign: user = 音色描述，audio 不含 voice
+                Pair(voice, AudioConfig(format = "wav"))
+            }
+            MODEL_CLONE -> {
+                // voiceclone: user = 可选风格指令，audio.voice = base64 音频
+                Pair("", AudioConfig(format = "wav", voice = voice))
+            }
+            else -> {
+                // preset: user = 可选风格指令，audio.voice = 预设音色名
+                Pair("", AudioConfig(format = "wav", voice = voice))
+            }
+        }
+
+        val messages = mutableListOf(
+            Message(role = "user", content = userContent),
+            Message(role = "assistant", content = content)
+        )
+
         val request = TTSRequest(
             model = model,
-            messages = listOf(
-                Message(role = "user", content = ""),
-                Message(role = "assistant", content = content)
-            ),
-            audio = AudioConfig(
-                format = "wav",
-                voice = voice
-            )
+            messages = messages,
+            audio = audioConfig
         )
 
         val json = gson.toJson(request)
@@ -131,7 +146,7 @@ data class Message(
 
 data class AudioConfig(
     val format: String = "wav",
-    val voice: String
+    val voice: String? = null
 )
 
 data class TTSResponse(
