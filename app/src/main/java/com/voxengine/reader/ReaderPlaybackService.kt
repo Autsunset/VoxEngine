@@ -1,0 +1,411 @@
+package com.voxengine.reader
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
+import android.net.Uri
+import android.os.Build
+import android.os.IBinder
+import androidx.core.app.NotificationCompat
+import com.voxengine.MainActivity
+import com.voxengine.R
+import com.voxengine.audio.AudioUtils
+import com.voxengine.data.AppDatabase
+import com.voxengine.engine.EngineRegistry
+import com.voxengine.engine.TTSEngine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.FileNotFoundException
+
+class ReaderPlaybackService : Service() {
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var playbackJob: Job? = null
+    private var currentTrack: AudioTrack? = null
+    private var isPaused = false
+    private var state: PlaybackState? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        createNotificationChannel()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START -> startPlayback(intent)
+            ACTION_PAUSE -> pausePlayback()
+            ACTION_RESUME -> resumePlayback()
+            ACTION_STOP -> stopPlayback()
+            ACTION_PREVIOUS_CHAPTER -> moveChapter(-1)
+            ACTION_NEXT_CHAPTER -> moveChapter(1)
+        }
+        return START_STICKY
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        stopPlayback(releaseService = false)
+        super.onDestroy()
+    }
+
+    private fun startPlayback(intent: Intent) {
+        val uri = intent.getStringExtra(EXTRA_URI) ?: return
+        state = PlaybackState(
+            uri = uri,
+            title = intent.getStringExtra(EXTRA_TITLE) ?: "本地小说",
+            voice = intent.getStringExtra(EXTRA_VOICE) ?: "冰糖",
+            style = intent.getStringExtra(EXTRA_STYLE)?.ifBlank { null },
+            engineId = intent.getStringExtra(EXTRA_ENGINE_ID) ?: "mimo",
+            chapterIndex = intent.getIntExtra(EXTRA_CHAPTER_INDEX, 0),
+            pageIndex = intent.getIntExtra(EXTRA_PAGE_INDEX, 0),
+            paragraphIndex = intent.getIntExtra(EXTRA_PARAGRAPH_INDEX, 0).coerceAtLeast(0),
+            pageTargetLength = intent.getIntExtra(EXTRA_PAGE_TARGET_LENGTH, 220).coerceIn(90, 520),
+            gapMs = intent.getLongExtra(EXTRA_GAP_MS, 700L).coerceAtLeast(0L),
+            stopAtMillis = intent.getIntExtra(EXTRA_SLEEP_MINUTES, 0).let { minutes ->
+                if (minutes > 0) System.currentTimeMillis() + minutes * 60_000L else 0L
+            },
+            stopAfterChapters = intent.getIntExtra(EXTRA_STOP_AFTER_CHAPTERS, 0)
+        )
+        playbackJob?.cancel()
+        currentTrack?.releaseSafely()
+        isPaused = false
+        startForeground(NOTIFICATION_ID, buildNotification("准备播放", isPlaying = true))
+        playbackJob = serviceScope.launch { runPlayback() }
+    }
+
+    private suspend fun runPlayback() {
+        val playbackState = state ?: return
+        val engine = EngineRegistry.get(playbackState.engineId)
+        if (engine == null) {
+            updateNotification("未找到引擎 ${playbackState.engineId}", false)
+            return
+        }
+        val db = AppDatabase.getDatabase(this)
+        val chapters = withContext(Dispatchers.IO) {
+            val bytes = contentResolver.openInputStream(Uri.parse(playbackState.uri))?.use { it.readBytes() }
+                ?: throw FileNotFoundException(playbackState.uri)
+            TxtNovelParser.parse(TxtNovelParser.decode(bytes))
+        }
+        if (chapters.isEmpty()) {
+            updateNotification("没有可播放章节", false)
+            return
+        }
+
+        var position = normalizePosition(chapters, PlaybackPosition(playbackState.chapterIndex, playbackState.pageIndex))
+        val startPosition = position
+        var finishedChapters = 0
+        var preload: Deferred<PageAudio>? = null
+
+        while (currentCoroutineContext().isActive && position != null) {
+            if (playbackState.stopAtMillis > 0 && System.currentTimeMillis() >= playbackState.stopAtMillis) break
+            if (playbackState.stopAfterChapters > 0 && finishedChapters >= playbackState.stopAfterChapters) break
+
+            playbackState.chapterIndex = position.chapterIndex
+            playbackState.pageIndex = position.pageIndex
+            playbackState.paragraphIndex = if (position == startPosition) playbackState.paragraphIndex else 0
+            sendProgress(position.chapterIndex, position.pageIndex, playbackState.paragraphIndex)
+            val chapter = chapters[position.chapterIndex]
+            val pages = pagesForPlayback(chapters, position.chapterIndex, playbackState)
+            val page = pages.getOrNull(position.pageIndex) ?: break
+            val startParagraphIndex = if (position == startPosition) playbackState.paragraphIndex else 0
+            updateNotification("${chapter.title} · 第${position.pageIndex + 1}页 合成中", true)
+
+            val currentAudio = preload
+                ?.takeIf { it.isActive }
+                ?.await()
+                ?.takeIf { it.position == position }
+                ?: synthesizePage(position, page, engine, playbackState.voice, playbackState.style, startParagraphIndex)
+
+            val nextPosition = nextPosition(chapters, position)
+            preload = nextPosition?.let { next ->
+                serviceScope.async(Dispatchers.IO) {
+                    val nextPage = pagesForPlayback(chapters, next.chapterIndex, playbackState)[next.pageIndex]
+                    synthesizePage(next, nextPage, engine, playbackState.voice, playbackState.style, 0)
+                }
+            }
+
+            updateNotification("${chapter.title} · 第${position.pageIndex + 1}页", true)
+            currentAudio.audioChunks.forEach { chunk ->
+                while (currentCoroutineContext().isActive && isPaused) delay(150)
+                if (!currentCoroutineContext().isActive) return@forEach
+                playbackState.paragraphIndex = chunk.paragraphIndex
+                sendProgress(position.chapterIndex, position.pageIndex, chunk.paragraphIndex)
+                db.readerBookDao().updateProgress(playbackState.uri, position.chapterIndex, position.pageIndex, chunk.paragraphIndex)
+                playAudioChunk(chunk.audioData)
+                if (playbackState.gapMs > 0) delay(playbackState.gapMs)
+            }
+            db.readerBookDao().updateProgress(playbackState.uri, position.chapterIndex, position.pageIndex, 0)
+
+            if (nextPosition != null && nextPosition.chapterIndex != position.chapterIndex) {
+                finishedChapters += 1
+            }
+            position = nextPosition
+        }
+
+        updateNotification("听书已结束", false)
+        state = null
+        isPaused = false
+        stopForeground(STOP_FOREGROUND_DETACH)
+        stopSelf()
+    }
+
+    private suspend fun synthesizePage(
+        position: PlaybackPosition,
+        page: TxtPage,
+        engine: TTSEngine,
+        voice: String,
+        style: String?,
+        startParagraphIndex: Int
+    ): PageAudio {
+        val startIndex = startParagraphIndex.coerceIn(0, page.paragraphs.size)
+        val chunks = page.paragraphs.drop(startIndex).mapIndexed { offset, paragraph ->
+            val paragraphIndex = startIndex + offset
+            serviceScope.async(Dispatchers.IO) {
+                AudioChunk(paragraphIndex, engine.synthesize(paragraph, voice, style).audioData)
+            }
+        }.awaitAll().sortedBy { it.paragraphIndex }
+        return PageAudio(position, chunks)
+    }
+
+    private fun pagesForPlayback(
+        chapters: List<TxtChapter>,
+        chapterIndex: Int,
+        playbackState: PlaybackState
+    ): List<TxtPage> = ReaderMeasuredPageCache.getChapterPages(playbackState.uri, chapterIndex)
+        ?: TxtNovelParser.paginate(chapters[chapterIndex].content, playbackState.pageTargetLength)
+
+    private fun normalizePosition(chapters: List<TxtChapter>, position: PlaybackPosition): PlaybackPosition? {
+        val playbackState = state ?: return null
+        if (chapters.isEmpty()) return null
+        var chapterIndex = position.chapterIndex.coerceIn(0, chapters.lastIndex)
+        while (chapterIndex <= chapters.lastIndex) {
+            val pages = pagesForPlayback(chapters, chapterIndex, playbackState)
+            if (pages.isNotEmpty()) {
+                return PlaybackPosition(chapterIndex, position.pageIndex.coerceIn(0, pages.lastIndex))
+            }
+            chapterIndex += 1
+        }
+        return null
+    }
+
+    private fun nextPosition(chapters: List<TxtChapter>, position: PlaybackPosition): PlaybackPosition? {
+        val playbackState = state ?: return null
+        val pages = pagesForPlayback(chapters, position.chapterIndex, playbackState)
+        if (position.pageIndex < pages.lastIndex) return PlaybackPosition(position.chapterIndex, position.pageIndex + 1)
+        val nextChapter = position.chapterIndex + 1
+        if (nextChapter > chapters.lastIndex) return null
+        return normalizePosition(chapters, PlaybackPosition(nextChapter, 0))
+    }
+
+    private suspend fun playAudioChunk(wavData: ByteArray) = withContext(Dispatchers.IO) {
+        val sampleRate = AudioUtils.getWavSampleRate(wavData)
+        val channelCount = AudioUtils.getWavChannelCount(wavData)
+        val bitsPerSample = AudioUtils.getWavBitsPerSample(wavData)
+        val pcmData = AudioUtils.extractPcmData(wavData)
+        val channelConfig = if (channelCount == 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
+        val encoding = if (bitsPerSample == 16) AudioFormat.ENCODING_PCM_16BIT else AudioFormat.ENCODING_PCM_8BIT
+        val bytesPerFrame = channelCount * (bitsPerSample / 8).coerceAtLeast(1)
+        val frameCount = if (bytesPerFrame > 0) pcmData.size / bytesPerFrame else pcmData.size
+        val bufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, encoding)
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(channelConfig)
+                    .setEncoding(encoding)
+                    .build()
+            )
+            .setBufferSizeInBytes(maxOf(bufferSize, pcmData.size))
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .build()
+
+        currentTrack = track
+        try {
+            track.write(pcmData, 0, pcmData.size)
+            track.play()
+            while (currentCoroutineContext().isActive) {
+                val stillPlaying = runCatching {
+                    track.playState == AudioTrack.PLAYSTATE_PLAYING && track.playbackHeadPosition < frameCount
+                }.getOrDefault(false)
+                if (!stillPlaying) break
+                if (isPaused) {
+                    runCatching { track.pause() }
+                    while (currentCoroutineContext().isActive && isPaused) Thread.sleep(100)
+                    if (currentCoroutineContext().isActive) runCatching { track.play() }
+                }
+                Thread.sleep(50)
+            }
+        } finally {
+            currentTrack = null
+            track.releaseSafely()
+        }
+    }
+
+    private fun pausePlayback() {
+        if (state == null || playbackJob == null) return
+        isPaused = true
+        currentTrack?.let { track -> runCatching { track.pause() } }
+        updateNotification("已暂停", false)
+    }
+
+    private fun resumePlayback() {
+        if (state == null || playbackJob == null) return
+        isPaused = false
+        currentTrack?.let { track -> runCatching { track.play() } }
+        updateNotification("播放中", true)
+    }
+
+    private fun moveChapter(delta: Int) {
+        val playbackState = state ?: return
+        playbackState.chapterIndex = (playbackState.chapterIndex + delta).coerceAtLeast(0)
+        playbackState.pageIndex = 0
+        playbackState.paragraphIndex = 0
+        playbackJob?.cancel()
+        currentTrack?.releaseSafely()
+        isPaused = false
+        playbackJob = serviceScope.launch { runPlayback() }
+    }
+
+    private fun stopPlayback(releaseService: Boolean = true) {
+        playbackJob?.cancel()
+        currentTrack?.releaseSafely()
+        playbackJob = null
+        currentTrack = null
+        state = null
+        isPaused = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        if (releaseService) stopSelf()
+    }
+
+    private fun updateNotification(text: String, isPlaying: Boolean) {
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text, isPlaying))
+    }
+
+    private fun sendProgress(chapterIndex: Int, pageIndex: Int, paragraphIndex: Int) {
+        val playbackState = state ?: return
+        sendBroadcast(
+            Intent(ACTION_PROGRESS)
+                .setPackage(packageName)
+                .putExtra(EXTRA_URI, playbackState.uri)
+                .putExtra(EXTRA_CHAPTER_INDEX, chapterIndex)
+                .putExtra(EXTRA_PAGE_INDEX, pageIndex)
+                .putExtra(EXTRA_PARAGRAPH_INDEX, paragraphIndex)
+        )
+    }
+
+    private fun buildNotification(text: String, isPlaying: Boolean) =
+        NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(state?.title ?: "VoxEngine 听书")
+            .setContentText(text)
+            .setOngoing(isPlaying)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this,
+                    0,
+                    Intent(this, MainActivity::class.java),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
+            .addAction(
+                if (isPaused) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause,
+                if (isPaused) "继续" else "暂停",
+                serviceIntent(if (isPaused) ACTION_RESUME else ACTION_PAUSE, 1)
+            )
+            .addAction(android.R.drawable.ic_media_previous, "上一章", serviceIntent(ACTION_PREVIOUS_CHAPTER, 2))
+            .addAction(android.R.drawable.ic_media_next, "下一章", serviceIntent(ACTION_NEXT_CHAPTER, 3))
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "停止", serviceIntent(ACTION_STOP, 4))
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+
+    private fun serviceIntent(action: String, requestCode: Int): PendingIntent =
+        PendingIntent.getService(
+            this,
+            requestCode,
+            Intent(this, ReaderPlaybackService::class.java).setAction(action),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            getString(R.string.channel_reader),
+            NotificationManager.IMPORTANCE_LOW
+        ).apply { description = getString(R.string.channel_reader_desc) }
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+    }
+
+    private fun AudioTrack.releaseSafely() {
+        runCatching { stop() }
+        runCatching { release() }
+    }
+
+    private data class PlaybackState(
+        val uri: String,
+        val title: String,
+        val voice: String,
+        val style: String?,
+        val engineId: String,
+        var chapterIndex: Int,
+        var pageIndex: Int,
+        var paragraphIndex: Int,
+        val pageTargetLength: Int,
+        val gapMs: Long,
+        val stopAtMillis: Long,
+        val stopAfterChapters: Int
+    )
+
+    private data class PlaybackPosition(val chapterIndex: Int, val pageIndex: Int)
+    private data class AudioChunk(val paragraphIndex: Int, val audioData: ByteArray)
+    private data class PageAudio(val position: PlaybackPosition, val audioChunks: List<AudioChunk>)
+
+    companion object {
+        const val ACTION_START = "com.voxengine.reader.START"
+        const val ACTION_PAUSE = "com.voxengine.reader.PAUSE"
+        const val ACTION_RESUME = "com.voxengine.reader.RESUME"
+        const val ACTION_STOP = "com.voxengine.reader.STOP"
+        const val ACTION_PREVIOUS_CHAPTER = "com.voxengine.reader.PREVIOUS_CHAPTER"
+        const val ACTION_NEXT_CHAPTER = "com.voxengine.reader.NEXT_CHAPTER"
+        const val ACTION_PROGRESS = "com.voxengine.reader.PROGRESS"
+
+        const val EXTRA_URI = "uri"
+        const val EXTRA_TITLE = "title"
+        const val EXTRA_VOICE = "voice"
+        const val EXTRA_STYLE = "style"
+        const val EXTRA_ENGINE_ID = "engine_id"
+        const val EXTRA_CHAPTER_INDEX = "chapter_index"
+        const val EXTRA_PAGE_INDEX = "page_index"
+        const val EXTRA_PARAGRAPH_INDEX = "paragraph_index"
+        const val EXTRA_PAGE_TARGET_LENGTH = "page_target_length"
+        const val EXTRA_GAP_MS = "gap_ms"
+        const val EXTRA_SLEEP_MINUTES = "sleep_minutes"
+        const val EXTRA_STOP_AFTER_CHAPTERS = "stop_after_chapters"
+
+        private const val CHANNEL_ID = "reader_playback"
+        private const val NOTIFICATION_ID = 2001
+    }
+}

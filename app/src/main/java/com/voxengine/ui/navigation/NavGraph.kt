@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material3.Icon
@@ -13,6 +14,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.navigation.NavDestination.Companion.hierarchy
@@ -23,6 +27,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.voxengine.ui.screens.AboutScreen
 import com.voxengine.ui.screens.LogScreen
+import com.voxengine.ui.screens.ReaderScreen
 import com.voxengine.ui.screens.SettingsScreen
 import com.voxengine.ui.screens.TestScreen
 import com.voxengine.ui.screens.VoiceManageScreen
@@ -32,6 +37,7 @@ data class BottomNavItem(val screen: Screen, val icon: ImageVector)
 val bottomNavItems = listOf(
     BottomNavItem(Screen.Settings, Icons.Default.Home),
     BottomNavItem(Screen.VoiceManage, Icons.Default.RecordVoiceOver),
+    BottomNavItem(Screen.Reader, Icons.AutoMirrored.Filled.MenuBook),
     BottomNavItem(Screen.Test, Icons.Default.Mic),
     BottomNavItem(Screen.About, Icons.Default.Info)
 )
@@ -39,28 +45,31 @@ val bottomNavItems = listOf(
 @Composable
 fun MainNavGraph() {
     val navController = rememberNavController()
+    var readerImmersive by remember { mutableStateOf(false) }
 
     Scaffold(
         bottomBar = {
-            val navBackStackEntry by navController.currentBackStackEntryAsState()
-            val currentDestination = navBackStackEntry?.destination
+            if (!readerImmersive) {
+                val navBackStackEntry by navController.currentBackStackEntryAsState()
+                val currentDestination = navBackStackEntry?.destination
 
-            NavigationBar {
-                bottomNavItems.forEach { item ->
-                    NavigationBarItem(
-                        icon = { Icon(item.icon, contentDescription = item.screen.title) },
-                        label = { Text(item.screen.title) },
-                        selected = currentDestination?.hierarchy?.any { it.route == item.screen.route } == true,
-                        onClick = {
-                            navController.navigate(item.screen.route) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
+                NavigationBar {
+                    bottomNavItems.forEach { item ->
+                        NavigationBarItem(
+                            icon = { Icon(item.icon, contentDescription = item.screen.title) },
+                            label = { Text(item.screen.title) },
+                            selected = currentDestination?.hierarchy?.any { it.route == item.screen.route } == true,
+                            onClick = {
+                                navController.navigate(item.screen.route) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
                                 }
-                                launchSingleTop = true
-                                restoreState = true
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
         }
@@ -72,6 +81,7 @@ fun MainNavGraph() {
         ) {
             composable(Screen.Settings.route) { SettingsScreen() }
             composable(Screen.VoiceManage.route) { VoiceManageScreen() }
+            composable(Screen.Reader.route) { ReaderScreen(onReadingModeChanged = { readerImmersive = it }) }
             composable(Screen.Test.route) { TestScreen() }
             composable(Screen.About.route) { AboutScreen(navController) }
             composable(Screen.Log.route) { LogScreen() }

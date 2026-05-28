@@ -4,4 +4,6 @@
     <string name="tts_engine_label">VoxEngine TTS</string>
     <string name="channel_bridge">Bridge Service</string>
     <string name="channel_bridge_desc">HTTP Bridge Server 运行中</string>
+    <string name="channel_reader">听书播放</string>
+    <string name="channel_reader_desc">本地小说听书播放中</string>
 </resources>

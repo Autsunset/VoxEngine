@@ -1,5 +1,8 @@
 package com.voxengine.ui.screens
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
@@ -47,6 +50,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.appcompat.app.AppCompatDelegate
 import com.voxengine.data.AppDatabase
 import com.voxengine.data.SettingsRepository
 import com.voxengine.engine.EngineRegistry
@@ -79,6 +83,7 @@ fun SettingsScreen() {
 
     var baseUrlInput by remember { mutableStateOf(baseUrl) }
     var apiKeyInput by remember { mutableStateOf(apiKey) }
+    var styleInput by remember { mutableStateOf(defaultStyle) }
     var voiceExpanded by remember { mutableStateOf(false) }
     var styleExpanded by remember { mutableStateOf(false) }
     var engineExpanded by remember { mutableStateOf(false) }
@@ -88,6 +93,7 @@ fun SettingsScreen() {
     // 同步输入框与 DataStore 值
     LaunchedEffect(baseUrl) { baseUrlInput = baseUrl }
     LaunchedEffect(apiKey) { apiKeyInput = apiKey }
+    LaunchedEffect(defaultStyle) { styleInput = defaultStyle }
 
     val activeEngine = EngineRegistry.get(currentEngineId)
     
@@ -148,7 +154,13 @@ fun SettingsScreen() {
                 Switch(
                     checked = darkMode,
                     onCheckedChange = { enabled ->
-                        scope.launch { settings.updateDarkMode(enabled) }
+                        scope.launch {
+                            settings.updateDarkMode(enabled)
+                            AppCompatDelegate.setDefaultNightMode(
+                                if (enabled) AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO
+                            )
+                            context.findActivity()?.recreate()
+                        }
                     }
                 )
             }
@@ -408,23 +420,30 @@ fun SettingsScreen() {
                         onExpandedChange = { styleExpanded = it }
                     ) {
                         OutlinedTextField(
-                            value = defaultStyle,
-                            onValueChange = { newValue ->
-                                scope.launch { settings.updateDefaultStyle(newValue) }
-                            },
+                            value = styleInput,
+                            onValueChange = { styleInput = it },
                             label = { Text("默认风格") },
                             placeholder = { Text("如：温柔磁性") },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = styleExpanded) },
-                            modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryEditable)
+                            modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryEditable),
+                            singleLine = true,
+                            isError = false
                         )
                         ExposedDropdownMenu(
                             expanded = styleExpanded,
-                            onDismissRequest = { styleExpanded = false }
+                            onDismissRequest = {
+                                styleExpanded = false
+                                // 关闭菜单时保存输入值
+                                if (styleInput != defaultStyle) {
+                                    scope.launch { settings.updateDefaultStyle(styleInput) }
+                                }
+                            }
                         ) {
                             styles.forEach { style ->
                                 DropdownMenuItem(
                                     text = { Text(style) },
                                     onClick = {
+                                        styleInput = style
                                         scope.launch { settings.updateDefaultStyle(style) }
                                         styleExpanded = false
                                     }
@@ -488,4 +507,10 @@ fun SettingsScreen() {
         }
         }
     }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

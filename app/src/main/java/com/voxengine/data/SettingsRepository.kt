@@ -27,6 +27,9 @@ class SettingsRepository(private val context: Context) {
     val currentEngine: Flow<String> = context.dataStore.data.map { it[KEY_CURRENT_ENGINE] ?: "mimo" }
     val userAgent: Flow<String> = context.dataStore.data.map { it[KEY_USER_AGENT] ?: "openclaw/unknown" }
     val parallelSynthesis: Flow<Boolean> = context.dataStore.data.map { it[KEY_PARALLEL_SYNTHESIS] ?: false }
+    val readerParagraphGapMs: Flow<Int> = context.dataStore.data.map { it[KEY_READER_PARAGRAPH_GAP_MS] ?: 700 }
+    val readerSleepMinutes: Flow<Int> = context.dataStore.data.map { it[KEY_READER_SLEEP_MINUTES] ?: 0 }
+    val readerStopAfterChapters: Flow<Int> = context.dataStore.data.map { it[KEY_READER_STOP_AFTER_CHAPTERS] ?: 0 }
 
     suspend fun updateBaseUrl(url: String) { context.dataStore.edit { it[KEY_BASE_URL] = url } }
     suspend fun updateApiKey(key: String) { context.dataStore.edit { it[KEY_API_KEY] = key } }
@@ -39,6 +42,9 @@ class SettingsRepository(private val context: Context) {
     suspend fun updateCurrentEngine(engineId: String) { context.dataStore.edit { it[KEY_CURRENT_ENGINE] = engineId } }
     suspend fun updateUserAgent(ua: String) { context.dataStore.edit { it[KEY_USER_AGENT] = ua } }
     suspend fun updateParallelSynthesis(enabled: Boolean) { context.dataStore.edit { it[KEY_PARALLEL_SYNTHESIS] = enabled } }
+    suspend fun updateReaderParagraphGapMs(gapMs: Int) { context.dataStore.edit { it[KEY_READER_PARAGRAPH_GAP_MS] = gapMs } }
+    suspend fun updateReaderSleepMinutes(minutes: Int) { context.dataStore.edit { it[KEY_READER_SLEEP_MINUTES] = minutes } }
+    suspend fun updateReaderStopAfterChapters(chapters: Int) { context.dataStore.edit { it[KEY_READER_STOP_AFTER_CHAPTERS] = chapters } }
 
     fun getEngineConfig(engineId: String, key: String): Flow<String> {
         val configKey = stringPreferencesKey("${engineId}_$key")
@@ -62,5 +68,8 @@ class SettingsRepository(private val context: Context) {
         private val KEY_CURRENT_ENGINE = stringPreferencesKey("current_engine")
         private val KEY_USER_AGENT = stringPreferencesKey("user_agent")
         private val KEY_PARALLEL_SYNTHESIS = booleanPreferencesKey("parallel_synthesis")
+        private val KEY_READER_PARAGRAPH_GAP_MS = intPreferencesKey("reader_paragraph_gap_ms")
+        private val KEY_READER_SLEEP_MINUTES = intPreferencesKey("reader_sleep_minutes")
+        private val KEY_READER_STOP_AFTER_CHAPTERS = intPreferencesKey("reader_stop_after_chapters")
     }
 }

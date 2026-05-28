@@ -146,3 +146,7 @@ MiMo 提供两种计费模式：
 ## 致谢
 
 - [MiMo TTS](https://platform.xiaomimimo.com?ref=S5T7WV) — 小米 MiMo 语音合成 API
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。
