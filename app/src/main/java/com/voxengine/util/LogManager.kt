@@ -14,11 +14,15 @@ object LogManager {
     private const val LOG_PREFIX = "voxengine_"
     private const val LOG_EXT = ".log"
     private const val MAX_DAYS = 7
+    private const val MAX_LOG_LINE_LENGTH = 3000
+    private const val BASE64_PREVIEW_CHARS = 16
 
     private var logFile: File? = null
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
     private val timeFormat = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.getDefault())
     private val lineRegex = Regex("""^(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d{3}) ([A-Z])/([^:]+): (.*)$""")
+    private val dataAudioRegex = Regex("""data:audio/[\w.+-]+;base64,[A-Za-z0-9+/=]+""")
+    private val base64BlobRegex = Regex("""(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{180,}={0,2}(?![A-Za-z0-9+/])""")
 
     data class LogEntry(
         val timestamp: Long,
@@ -60,10 +64,12 @@ object LogManager {
         logFile = File(logDir, "$LOG_PREFIX$today$LOG_EXT")
     }
 
+    @Synchronized
     fun appendLog(level: String, tag: String, message: String) {
         val file = logFile ?: return
         val timestamp = timeFormat.format(Date())
-        val line = "$timestamp $level/$tag: $message\n"
+        val safeMessage = sanitizeMessage(message)
+        val line = "$timestamp $level/$tag: $safeMessage\n"
         try {
             file.appendText(line)
         } catch (e: Exception) {
@@ -84,14 +90,16 @@ object LogManager {
     fun readEntries(context: Context, filter: LogFilter = LogFilter()): List<LogEntry> {
         val dates = filter.date?.let(::listOf) ?: getAvailableDates(context)
         val keyword = filter.keyword.trim()
-        return dates.flatMap { date -> readEntriesForDate(context, date) }
+        return dates.asSequence()
+            .flatMap { date -> readEntriesForDate(context, date).asSequence() }
             .filter { entry ->
-                val minute = entry.time.substring(0, 5).toMinutesOrNull() ?: 0
-                minute in filter.startMinute..filter.endMinute &&
+                val minute = entry.time.take(5).toMinutesOrNull() ?: entry.minuteOfDay()
+                minute.matchesRange(filter.startMinute, filter.endMinute) &&
                     (filter.level == "全部" || entry.level == filter.level) &&
                     (keyword.isBlank() || entry.raw.contains(keyword, ignoreCase = true))
             }
             .sortedByDescending { it.timestamp }
+            .toList()
     }
 
     fun formatEntries(entries: List<LogEntry>): String = entries.joinToString("\n") { it.raw }
@@ -120,20 +128,24 @@ object LogManager {
         val file = File(File(context.filesDir, LOG_DIR), "$LOG_PREFIX$date$LOG_EXT")
         if (!file.exists()) return emptyList()
         return runCatching {
-            file.readLines().mapNotNull { line -> parseLine(date, line) }
+            file.useLines { lines -> lines.mapNotNull { line -> parseLine(date, line) }.toList() }
         }.getOrDefault(emptyList())
     }
 
     private fun parseLine(date: String, line: String): LogEntry? {
-        val match = lineRegex.matchEntire(line) ?: return LogEntry(
-            timestamp = dateFormat.parse(date)?.time ?: 0L,
-            date = date,
-            time = "00:00:00.000",
-            level = "I",
-            tag = "Unknown",
-            message = line,
-            raw = line
-        )
+        val match = lineRegex.matchEntire(line) ?: run {
+            val safeLine = sanitizeMessage(line)
+            return LogEntry(
+                timestamp = dateFormat.parse(date)?.time ?: 0L,
+                date = date,
+                time = "00:00:00.000",
+                level = "I",
+                tag = "Unknown",
+                message = safeLine,
+                raw = safeLine
+            )
+        }
+        val safeMessage = sanitizeMessage(match.groupValues[9])
         val year = date.substringBefore('-').toIntOrNull() ?: Calendar.getInstance().get(Calendar.YEAR)
         val month = match.groupValues[1].toInt()
         val day = match.groupValues[2].toInt()
@@ -156,10 +168,39 @@ object LogManager {
             time = "%02d:%02d:%02d.%03d".format(hour, minute, second, millis),
             level = match.groupValues[7],
             tag = match.groupValues[8],
-            message = match.groupValues[9],
-            raw = line
+            message = safeMessage,
+            raw = "${match.groupValues[1]}-${match.groupValues[2]} ${match.groupValues[3]}:${match.groupValues[4]}:${match.groupValues[5]}.${match.groupValues[6]} ${match.groupValues[7]}/${match.groupValues[8]}: $safeMessage"
         )
     }
+
+    private fun sanitizeMessage(message: String): String {
+        val escaped = message
+            .replace("\r", "\\r")
+            .replace("\n", "\\n")
+        val redactedAudio = dataAudioRegex.replace(escaped) { match ->
+            val value = match.value
+            val prefix = value.substringBefore(",")
+            val payloadLength = value.length - prefix.length - 1
+            val preview = value.substringAfter(",").take(BASE64_PREVIEW_CHARS)
+            "$prefix,$preview...(base64 redacted, ${payloadLength} chars)"
+        }
+        val redactedBlobs = base64BlobRegex.replace(redactedAudio) { match ->
+            "${match.value.take(BASE64_PREVIEW_CHARS)}...(base64 redacted, ${match.value.length} chars)"
+        }
+        return if (redactedBlobs.length > MAX_LOG_LINE_LENGTH) {
+            redactedBlobs.take(MAX_LOG_LINE_LENGTH) + "...(truncated)"
+        } else {
+            redactedBlobs
+        }
+    }
+
+    private fun LogEntry.minuteOfDay(): Int {
+        val calendar = Calendar.getInstance().apply { timeInMillis = timestamp }
+        return calendar.get(Calendar.HOUR_OF_DAY) * 60 + calendar.get(Calendar.MINUTE)
+    }
+
+    private fun Int.matchesRange(start: Int, end: Int): Boolean =
+        if (start <= end) this in start..end else this >= start || this <= end
 
     private fun String.toMinutesOrNull(): Int? {
         val parts = split(':')

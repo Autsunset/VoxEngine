@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -131,6 +132,8 @@ fun ReaderScreen(
     val books by db.readerBookDao().getAll().collectAsState(initial = emptyList())
 
     val currentEngineId by settings.currentEngine.collectAsState(initial = "mimo")
+    val defaultVoice by settings.defaultVoice.collectAsState(initial = "冰糖")
+    val defaultStyle by settings.defaultStyle.collectAsState(initial = "无")
     val activeEngine = remember(currentEngineId) { EngineRegistry.get(currentEngineId) }
     val voices by produceState(initialValue = emptyList<com.voxengine.engine.VoiceInfo>(), activeEngine) {
         value = activeEngine?.getVoices() ?: emptyList()
@@ -138,6 +141,16 @@ fun ReaderScreen(
     val readerGapMs by settings.readerParagraphGapMs.collectAsState(initial = 700)
     val readerSleepMinutes by settings.readerSleepMinutes.collectAsState(initial = 0)
     val readerStopAfterChapters by settings.readerStopAfterChapters.collectAsState(initial = 0)
+    val readerConservativeRequestIntervalMs by settings.readerConservativeRequestIntervalMs.collectAsState(initial = 5000)
+    val readerRetryCount by settings.readerRetryCount.collectAsState(initial = 3)
+    val readerRetryBaseDelayMs by settings.readerRetryBaseDelayMs.collectAsState(initial = 2000)
+
+    var readerGapMsDraft by remember { mutableIntStateOf(readerGapMs) }
+    var readerSleepMinutesDraft by remember { mutableIntStateOf(readerSleepMinutes) }
+    var readerStopAfterChaptersDraft by remember { mutableIntStateOf(readerStopAfterChapters) }
+    var readerConservativeRequestIntervalMsDraft by remember { mutableIntStateOf(readerConservativeRequestIntervalMs) }
+    var readerRetryCountDraft by remember { mutableIntStateOf(readerRetryCount) }
+    var readerRetryBaseDelayMsDraft by remember { mutableIntStateOf(readerRetryBaseDelayMs) }
 
     var currentBook by remember { mutableStateOf<ReaderBookEntity?>(null) }
     var chapters by remember { mutableStateOf<List<TxtChapter>>(emptyList()) }
@@ -166,6 +179,13 @@ fun ReaderScreen(
     LaunchedEffect(currentBook != null) {
         onReadingModeChanged(currentBook != null)
     }
+
+    LaunchedEffect(readerGapMs) { readerGapMsDraft = readerGapMs }
+    LaunchedEffect(readerSleepMinutes) { readerSleepMinutesDraft = readerSleepMinutes }
+    LaunchedEffect(readerStopAfterChapters) { readerStopAfterChaptersDraft = readerStopAfterChapters }
+    LaunchedEffect(readerConservativeRequestIntervalMs) { readerConservativeRequestIntervalMsDraft = readerConservativeRequestIntervalMs }
+    LaunchedEffect(readerRetryCount) { readerRetryCountDraft = readerRetryCount }
+    LaunchedEffect(readerRetryBaseDelayMs) { readerRetryBaseDelayMsDraft = readerRetryBaseDelayMs }
 
     fun pagesFor(chapter: Int): List<TxtPage> {
         val bookUri = currentBook?.uri
@@ -224,6 +244,9 @@ fun ReaderScreen(
 
     fun startListening(paragraphIndex: Int = 0) {
         val book = currentBook ?: return
+        if (pages.isNotEmpty()) {
+            ReaderMeasuredPageCache.putChapterPages(book.uri, chapterIndex, pages)
+        }
         val intent = Intent(context, ReaderPlaybackService::class.java).apply {
             action = ReaderPlaybackService.ACTION_START
             putExtra(ReaderPlaybackService.EXTRA_URI, book.uri)
@@ -235,9 +258,12 @@ fun ReaderScreen(
             putExtra(ReaderPlaybackService.EXTRA_PAGE_INDEX, pageIndex)
             putExtra(ReaderPlaybackService.EXTRA_PARAGRAPH_INDEX, paragraphIndex.coerceAtLeast(0))
             putExtra(ReaderPlaybackService.EXTRA_PAGE_TARGET_LENGTH, pageTargetLength)
-            putExtra(ReaderPlaybackService.EXTRA_GAP_MS, readerGapMs.toLong())
-            putExtra(ReaderPlaybackService.EXTRA_SLEEP_MINUTES, readerSleepMinutes)
-            putExtra(ReaderPlaybackService.EXTRA_STOP_AFTER_CHAPTERS, readerStopAfterChapters)
+            putExtra(ReaderPlaybackService.EXTRA_GAP_MS, readerGapMsDraft.toLong())
+            putExtra(ReaderPlaybackService.EXTRA_SLEEP_MINUTES, readerSleepMinutesDraft)
+            putExtra(ReaderPlaybackService.EXTRA_STOP_AFTER_CHAPTERS, readerStopAfterChaptersDraft)
+            putExtra(ReaderPlaybackService.EXTRA_CONSERVATIVE_REQUEST_INTERVAL_MS, readerConservativeRequestIntervalMsDraft)
+            putExtra(ReaderPlaybackService.EXTRA_RETRY_COUNT, readerRetryCountDraft)
+            putExtra(ReaderPlaybackService.EXTRA_RETRY_BASE_DELAY_MS, readerRetryBaseDelayMsDraft)
         }
         ContextCompat.startForegroundService(context, intent)
         isListening = true
@@ -337,9 +363,15 @@ fun ReaderScreen(
         }
     }
 
-    LaunchedEffect(voices) {
-        val selected = voices.firstOrNull { it.id == selectedVoiceId }
+    LaunchedEffect(defaultVoice, defaultStyle) {
+        if (defaultVoice.isNotBlank()) selectedVoiceId = defaultVoice
+        selectedStyle = defaultStyle.takeIf { it != "无" }.orEmpty()
+    }
+
+    LaunchedEffect(voices, selectedVoiceId) {
+        val selected = voices.firstOrNull { it.id == selectedVoiceId || it.name == selectedVoiceId }
         if (selected != null) {
+            selectedVoiceId = selected.id
             selectedVoiceName = selected.name
         } else if (voices.isNotEmpty()) {
             selectedVoiceId = voices.first().id
@@ -433,9 +465,9 @@ fun ReaderScreen(
             pageAnimationKey = pageAnimationKey,
             pageAnimationForward = pageAnimationForward,
             onPageTargetChanged = { pageTargetLength = it },
-            onPagesMeasured = { measuredPages ->
-                ReaderMeasuredPageCache.putChapterPages(book.uri, chapterIndex, measuredPages)
-                if (measuredPages != pages) {
+            onPagesMeasured = { measuredChapterIndex, measuredPages ->
+                ReaderMeasuredPageCache.putChapterPages(book.uri, measuredChapterIndex, measuredPages)
+                if (measuredChapterIndex == chapterIndex && measuredPages != pages) {
                     pages = measuredPages
                     pageIndex = pageIndex.coerceIn(0, (measuredPages.size - 1).coerceAtLeast(0))
                 }
@@ -496,14 +528,30 @@ fun ReaderScreen(
                     selectedVoiceId = voice.id
                     selectedVoiceName = voice.name
                     voiceExpanded = false
+                    scope.launch { settings.updateDefaultVoice(voice.id) }
                 },
-                onStyleChange = { selectedStyle = it },
-                readerGapMs = readerGapMs,
-                readerSleepMinutes = readerSleepMinutes,
-                readerStopAfterChapters = readerStopAfterChapters,
-                onGapChange = { value -> scope.launch { settings.updateReaderParagraphGapMs(value) } },
-                onSleepChange = { value -> scope.launch { settings.updateReaderSleepMinutes(value) } },
-                onStopAfterChaptersChange = { value -> scope.launch { settings.updateReaderStopAfterChapters(value) } },
+                onStyleChange = {
+                    selectedStyle = it
+                    scope.launch { settings.updateDefaultStyle(it.ifBlank { "无" }) }
+                },
+                readerGapMs = readerGapMsDraft,
+                readerSleepMinutes = readerSleepMinutesDraft,
+                readerStopAfterChapters = readerStopAfterChaptersDraft,
+                conservativeRequestIntervalMs = readerConservativeRequestIntervalMsDraft,
+                retryCount = readerRetryCountDraft,
+                retryBaseDelayMs = readerRetryBaseDelayMsDraft,
+                onGapChange = { value -> readerGapMsDraft = value.coerceIn(0, 3000) },
+                onSleepChange = { value -> readerSleepMinutesDraft = value.coerceIn(0, 180) },
+                onStopAfterChaptersChange = { value -> readerStopAfterChaptersDraft = value.coerceIn(0, 20) },
+                onConservativeRequestIntervalChange = { value -> readerConservativeRequestIntervalMsDraft = value.coerceIn(500, 30_000) },
+                onRetryCountChange = { value -> readerRetryCountDraft = value.coerceIn(0, 8) },
+                onRetryBaseDelayChange = { value -> readerRetryBaseDelayMsDraft = value.coerceIn(500, 15_000) },
+                onGapChangeFinished = { scope.launch { settings.updateReaderParagraphGapMs(readerGapMsDraft) } },
+                onSleepChangeFinished = { scope.launch { settings.updateReaderSleepMinutes(readerSleepMinutesDraft) } },
+                onStopAfterChaptersChangeFinished = { scope.launch { settings.updateReaderStopAfterChapters(readerStopAfterChaptersDraft) } },
+                onConservativeRequestIntervalChangeFinished = { scope.launch { settings.updateReaderConservativeRequestIntervalMs(readerConservativeRequestIntervalMsDraft) } },
+                onRetryCountChangeFinished = { scope.launch { settings.updateReaderRetryCount(readerRetryCountDraft) } },
+                onRetryBaseDelayChangeFinished = { scope.launch { settings.updateReaderRetryBaseDelayMs(readerRetryBaseDelayMsDraft) } },
                 isListening = isListening,
                 isPaused = isPaused,
                 canListen = activeEngine?.isConfigured() == true && pages.isNotEmpty(),
@@ -596,7 +644,7 @@ private fun ReaderPage(
     pageAnimationKey: Long,
     pageAnimationForward: Boolean,
     onPageTargetChanged: (Int) -> Unit,
-    onPagesMeasured: (List<TxtPage>) -> Unit,
+    onPagesMeasured: (Int, List<TxtPage>) -> Unit,
     onParagraphTap: () -> Unit,
     onParagraphLongPress: (Int, String) -> Unit,
     onCopyParagraph: (String) -> Unit,
@@ -612,42 +660,44 @@ private fun ReaderPage(
         val pageInfoStyle = MaterialTheme.typography.bodySmall
         val bodyStyle = MaterialTheme.typography.bodyLarge.copy(lineHeight = 30.sp)
         val chapterTitle = chapters.getOrNull(chapterIndex)?.title ?: book.title
+        fun measureChapterPagesForIndex(targetChapterIndex: Int): List<TxtPage> = with(density) {
+            val targetTitle = chapters.getOrNull(targetChapterIndex)?.title ?: book.title
+            val pageWidthPx = (maxWidth - 48.dp).roundToPx().coerceAtLeast(1)
+            val screenHeightPx = maxHeight.roundToPx().coerceAtLeast(1)
+            val verticalPaddingPx = 44.dp.roundToPx()
+            val titleGapPx = 8.dp.roundToPx()
+            val pageInfoGapPx = 14.dp.roundToPx()
+            val paragraphGapPx = 14.dp.roundToPx()
+            val pageInfoHeightPx = textMeasurer.measure(
+                text = AnnotatedString("第999/999章 · 第999/999页"),
+                style = pageInfoStyle,
+                constraints = Constraints(maxWidth = pageWidthPx)
+            ).size.height
+            val titleHeightPx = textMeasurer.measure(
+                text = AnnotatedString(targetTitle),
+                style = titleStyle,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                constraints = Constraints(maxWidth = pageWidthPx)
+            ).size.height
+            val normalTextHeightPx = (screenHeightPx - verticalPaddingPx - pageInfoHeightPx - pageInfoGapPx).coerceAtLeast(1)
+            val firstTextHeightPx = (normalTextHeightPx - titleHeightPx - titleGapPx).coerceAtLeast(1)
+            measurePagesForViewport(
+                content = chapters.getOrNull(targetChapterIndex)?.content.orEmpty(),
+                textMeasurer = textMeasurer,
+                style = bodyStyle,
+                pageWidthPx = pageWidthPx,
+                firstPageHeightPx = firstTextHeightPx,
+                normalPageHeightPx = normalTextHeightPx,
+                paragraphGapPx = paragraphGapPx
+            )
+        }
         val measuredPages = remember(chapters, chapterIndex, maxWidth, maxHeight, textMeasurer, titleStyle, pageInfoStyle, bodyStyle) {
-            with(density) {
-                val pageWidthPx = (maxWidth - 48.dp).roundToPx().coerceAtLeast(1)
-                val screenHeightPx = maxHeight.roundToPx().coerceAtLeast(1)
-                val verticalPaddingPx = 44.dp.roundToPx()
-                val titleGapPx = 8.dp.roundToPx()
-                val pageInfoGapPx = 14.dp.roundToPx()
-                val paragraphGapPx = 14.dp.roundToPx()
-                val pageInfoHeightPx = textMeasurer.measure(
-                    text = AnnotatedString("第999/999章 · 第999/999页"),
-                    style = pageInfoStyle,
-                    constraints = Constraints(maxWidth = pageWidthPx)
-                ).size.height
-                val titleHeightPx = textMeasurer.measure(
-                    text = AnnotatedString(chapterTitle),
-                    style = titleStyle,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    constraints = Constraints(maxWidth = pageWidthPx)
-                ).size.height
-                val normalTextHeightPx = (screenHeightPx - verticalPaddingPx - pageInfoHeightPx - pageInfoGapPx).coerceAtLeast(1)
-                val firstTextHeightPx = (normalTextHeightPx - titleHeightPx - titleGapPx).coerceAtLeast(1)
-                measurePagesForViewport(
-                    content = chapters.getOrNull(chapterIndex)?.content.orEmpty(),
-                    textMeasurer = textMeasurer,
-                    style = bodyStyle,
-                    pageWidthPx = pageWidthPx,
-                    firstPageHeightPx = firstTextHeightPx,
-                    normalPageHeightPx = normalTextHeightPx,
-                    paragraphGapPx = paragraphGapPx
-                )
-            }
+            measureChapterPagesForIndex(chapterIndex)
         }
         val displayPages = measuredPages.ifEmpty { pages }
-        LaunchedEffect(measuredPages) {
-            onPagesMeasured(measuredPages)
+        LaunchedEffect(chapterIndex, measuredPages) {
+            onPagesMeasured(chapterIndex, measuredPages)
             val averagePageLength = measuredPages.map { it.text.length }.takeIf { it.isNotEmpty() }?.average()?.roundToInt() ?: 220
             onPageTargetChanged(averagePageLength.coerceIn(90, 520))
         }
@@ -902,9 +952,21 @@ private fun ReaderBottomMenu(
     readerGapMs: Int,
     readerSleepMinutes: Int,
     readerStopAfterChapters: Int,
+    conservativeRequestIntervalMs: Int,
+    retryCount: Int,
+    retryBaseDelayMs: Int,
     onGapChange: (Int) -> Unit,
     onSleepChange: (Int) -> Unit,
     onStopAfterChaptersChange: (Int) -> Unit,
+    onConservativeRequestIntervalChange: (Int) -> Unit,
+    onRetryCountChange: (Int) -> Unit,
+    onRetryBaseDelayChange: (Int) -> Unit,
+    onGapChangeFinished: () -> Unit,
+    onSleepChangeFinished: () -> Unit,
+    onStopAfterChaptersChangeFinished: () -> Unit,
+    onConservativeRequestIntervalChangeFinished: () -> Unit,
+    onRetryCountChangeFinished: () -> Unit,
+    onRetryBaseDelayChangeFinished: () -> Unit,
     isListening: Boolean,
     isPaused: Boolean,
     canListen: Boolean,
@@ -946,9 +1008,21 @@ private fun ReaderBottomMenu(
                     readerGapMs = readerGapMs,
                     readerSleepMinutes = readerSleepMinutes,
                     readerStopAfterChapters = readerStopAfterChapters,
+                    conservativeRequestIntervalMs = conservativeRequestIntervalMs,
+                    retryCount = retryCount,
+                    retryBaseDelayMs = retryBaseDelayMs,
                     onGapChange = onGapChange,
                     onSleepChange = onSleepChange,
-                    onStopAfterChaptersChange = onStopAfterChaptersChange
+                    onStopAfterChaptersChange = onStopAfterChaptersChange,
+                    onConservativeRequestIntervalChange = onConservativeRequestIntervalChange,
+                    onRetryCountChange = onRetryCountChange,
+                    onRetryBaseDelayChange = onRetryBaseDelayChange,
+                    onGapChangeFinished = onGapChangeFinished,
+                    onSleepChangeFinished = onSleepChangeFinished,
+                    onStopAfterChaptersChangeFinished = onStopAfterChaptersChangeFinished,
+                    onConservativeRequestIntervalChangeFinished = onConservativeRequestIntervalChangeFinished,
+                    onRetryCountChangeFinished = onRetryCountChangeFinished,
+                    onRetryBaseDelayChangeFinished = onRetryBaseDelayChangeFinished
                 )
             }
 
@@ -1029,7 +1103,7 @@ private fun ReaderBottomMenu(
             }
 
             val tip = statusText.ifBlank {
-                if (canListen) "按页并发合成，播放时预加载下一页" else "请先配置当前语音引擎"
+                if (canListen) "顺序合成，播放时缓存后续段落" else "请先配置当前语音引擎"
             }
             Text(
                 tip,
@@ -1076,6 +1150,14 @@ private fun CatalogPanel(
     currentChapterIndex: Int,
     onChapterSelected: (Int) -> Unit
 ) {
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = currentChapterIndex.coerceIn(0, (chapters.size - 1).coerceAtLeast(0)))
+
+    LaunchedEffect(currentChapterIndex, chapters.size) {
+        if (chapters.isNotEmpty()) {
+            listState.scrollToItem(currentChapterIndex.coerceIn(0, chapters.lastIndex))
+        }
+    }
+
     Column(modifier = Modifier.fillMaxWidth().fillMaxHeight(0.42f)) {
         Text(
             "目录 · 共${chapters.size}章",
@@ -1083,7 +1165,7 @@ private fun CatalogPanel(
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(bottom = 6.dp)
         )
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(modifier = Modifier.fillMaxSize(), state = listState) {
             items(chapters.size) { index ->
                 val chapter = chapters[index]
                 Row(
@@ -1125,9 +1207,21 @@ private fun ReaderSettingsPanel(
     readerGapMs: Int,
     readerSleepMinutes: Int,
     readerStopAfterChapters: Int,
+    conservativeRequestIntervalMs: Int,
+    retryCount: Int,
+    retryBaseDelayMs: Int,
     onGapChange: (Int) -> Unit,
     onSleepChange: (Int) -> Unit,
-    onStopAfterChaptersChange: (Int) -> Unit
+    onStopAfterChaptersChange: (Int) -> Unit,
+    onConservativeRequestIntervalChange: (Int) -> Unit,
+    onRetryCountChange: (Int) -> Unit,
+    onRetryBaseDelayChange: (Int) -> Unit,
+    onGapChangeFinished: () -> Unit,
+    onSleepChangeFinished: () -> Unit,
+    onStopAfterChaptersChangeFinished: () -> Unit,
+    onConservativeRequestIntervalChangeFinished: () -> Unit,
+    onRetryCountChangeFinished: () -> Unit,
+    onRetryBaseDelayChangeFinished: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxWidth().fillMaxHeight(0.48f).verticalScroll(rememberScrollState()),
@@ -1164,11 +1258,50 @@ private fun ReaderSettingsPanel(
             modifier = Modifier.fillMaxWidth()
         )
         Text("段间间隔: ${readerGapMs}ms", style = MaterialTheme.typography.bodySmall)
-        Slider(value = readerGapMs.toFloat(), onValueChange = { onGapChange(it.toInt()) }, valueRange = 0f..3000f)
+        Slider(
+            value = readerGapMs.toFloat(),
+            onValueChange = { onGapChange(it.roundToInt()) },
+            onValueChangeFinished = onGapChangeFinished,
+            valueRange = 0f..3000f
+        )
+        Text("克隆/设计请求间隔: ${conservativeRequestIntervalMs}ms", style = MaterialTheme.typography.bodySmall)
+        Slider(
+            value = conservativeRequestIntervalMs.toFloat(),
+            onValueChange = { onConservativeRequestIntervalChange(it.roundToInt()) },
+            onValueChangeFinished = onConservativeRequestIntervalChangeFinished,
+            valueRange = 500f..30000f
+        )
+        Text("失败重试次数: ${retryCount}次", style = MaterialTheme.typography.bodySmall)
+        Slider(
+            value = retryCount.toFloat(),
+            onValueChange = { onRetryCountChange(it.roundToInt()) },
+            onValueChangeFinished = onRetryCountChangeFinished,
+            valueRange = 0f..8f,
+            steps = 7
+        )
+        Text("重试基础等待: ${retryBaseDelayMs}ms", style = MaterialTheme.typography.bodySmall)
+        Slider(
+            value = retryBaseDelayMs.toFloat(),
+            onValueChange = { onRetryBaseDelayChange(it.roundToInt()) },
+            onValueChangeFinished = onRetryBaseDelayChangeFinished,
+            valueRange = 500f..15000f
+        )
         Text("定时停止: " + if (readerSleepMinutes == 0) "关闭" else "${readerSleepMinutes}分钟", style = MaterialTheme.typography.bodySmall)
-        Slider(value = readerSleepMinutes.toFloat(), onValueChange = { onSleepChange(it.toInt()) }, valueRange = 0f..180f, steps = 17)
+        Slider(
+            value = readerSleepMinutes.toFloat(),
+            onValueChange = { onSleepChange(it.roundToInt()) },
+            onValueChangeFinished = onSleepChangeFinished,
+            valueRange = 0f..180f,
+            steps = 17
+        )
         Text("播放章数后停止: " + if (readerStopAfterChapters == 0) "关闭" else "${readerStopAfterChapters}章", style = MaterialTheme.typography.bodySmall)
-        Slider(value = readerStopAfterChapters.toFloat(), onValueChange = { onStopAfterChaptersChange(it.toInt()) }, valueRange = 0f..20f, steps = 19)
+        Slider(
+            value = readerStopAfterChapters.toFloat(),
+            onValueChange = { onStopAfterChaptersChange(it.roundToInt()) },
+            onValueChangeFinished = onStopAfterChaptersChangeFinished,
+            valueRange = 0f..20f,
+            steps = 19
+        )
         Spacer(Modifier.height(12.dp))
     }
 }

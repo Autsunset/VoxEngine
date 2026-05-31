@@ -63,6 +63,7 @@ import androidx.core.content.ContextCompat
 import com.voxengine.audio.AudioUtils
 import com.voxengine.data.AppDatabase
 import com.voxengine.data.VoiceEntity
+import com.voxengine.engine.mimo.MiMoTTSClient
 import com.voxengine.engine.EngineRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -298,7 +299,7 @@ fun VoiceManageScreen() {
                         VoiceEntity(
                             name = name,
                             type = "clone",
-                            model = "clone",
+                            model = MiMoTTSClient.MODEL_CLONE,
                             voiceParam = "data:audio/wav;base64,$audioBase64",
                             description = description,
                             audioBase64 = audioBase64,
@@ -320,7 +321,7 @@ fun VoiceManageScreen() {
                         VoiceEntity(
                             name = name,
                             type = "design",
-                            model = "design",
+                            model = MiMoTTSClient.MODEL_DESIGN,
                             voiceParam = description,
                             description = description,
                             engineId = currentEngineId
@@ -341,6 +342,7 @@ fun CloneVoiceDialog(onDismiss: () -> Unit, onSave: (String, String, String) -> 
     var audioUri by remember { mutableStateOf<Uri?>(null) }
     var isRecording by remember { mutableStateOf(false) }
     var recordedSeconds by remember { mutableLongStateOf(0L) }
+    var cloneVoiceHint by remember { mutableStateOf("") }
     var recorder by remember { mutableStateOf<AudioRecord?>(null) }
     var recordingThread by remember { mutableStateOf<Thread?>(null) }
     val context = LocalContext.current
@@ -397,6 +399,7 @@ fun CloneVoiceDialog(onDismiss: () -> Unit, onSave: (String, String, String) -> 
         recorder = rec
         isRecording = true
         recordedSeconds = 0L
+        cloneVoiceHint = ""
 
         val pcmBuffer = java.io.ByteArrayOutputStream()
         val readBuffer = ByteArray(bufferSize)
@@ -412,9 +415,13 @@ fun CloneVoiceDialog(onDismiss: () -> Unit, onSave: (String, String, String) -> 
                 handler.post {
                     if (isRecording) {
                         recordedSeconds = (System.currentTimeMillis() - startTime) / 1000
+                        cloneVoiceHint = if (recordedSeconds > 10) {
+                            "参考音频已经超过10秒。如果后续克隆失败，请缩短到10秒以内再试。"
+                        } else {
+                            ""
+                        }
                     }
                 }
-                if ((System.currentTimeMillis() - startTime) / 1000 >= 10) break
             }
             rec.stop()
             rec.release()
@@ -430,6 +437,11 @@ fun CloneVoiceDialog(onDismiss: () -> Unit, onSave: (String, String, String) -> 
                 isRecording = false
                 recorder = null
                 recordedSeconds = (System.currentTimeMillis() - startTime) / 1000
+                cloneVoiceHint = if (recordedSeconds > 10) {
+                    "参考音频已经超过10秒。如果后续克隆失败，请缩短到10秒以内再试。"
+                } else {
+                    ""
+                }
             }
         }.also { it.start() }
     }
@@ -484,16 +496,33 @@ fun CloneVoiceDialog(onDismiss: () -> Unit, onSave: (String, String, String) -> 
                     )
                 }
 
+                if (cloneVoiceHint.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        cloneVoiceHint,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "提示：建议录制 10 秒以内的清晰人声。音频仅支持 WAV/MP3 格式，Base64 编码后不超过 10MB。",
+                    "提示：不会自动截断录音；建议录制10秒以内的清晰人声。若克隆失败，请缩短录音时间后重试。音频仅支持 WAV/MP3 格式，Base64 编码后不超过 10MB。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(name, description, audioBase64) }, enabled = name.isNotBlank() && audioBase64.isNotBlank()) {
+            TextButton(
+                onClick = {
+                    if (recordedSeconds > 10) {
+                        Toast.makeText(context, "参考音频超过10秒，若克隆失败请缩短后重试", Toast.LENGTH_LONG).show()
+                    }
+                    onSave(name, description, audioBase64)
+                },
+                enabled = name.isNotBlank() && audioBase64.isNotBlank()
+            ) {
                 Text("保存")
             }
         },

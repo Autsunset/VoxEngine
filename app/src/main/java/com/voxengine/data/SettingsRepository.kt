@@ -30,6 +30,9 @@ class SettingsRepository(private val context: Context) {
     val readerParagraphGapMs: Flow<Int> = context.dataStore.data.map { it[KEY_READER_PARAGRAPH_GAP_MS] ?: 700 }
     val readerSleepMinutes: Flow<Int> = context.dataStore.data.map { it[KEY_READER_SLEEP_MINUTES] ?: 0 }
     val readerStopAfterChapters: Flow<Int> = context.dataStore.data.map { it[KEY_READER_STOP_AFTER_CHAPTERS] ?: 0 }
+    val readerConservativeRequestIntervalMs: Flow<Int> = context.dataStore.data.map { it[KEY_READER_CONSERVATIVE_REQUEST_INTERVAL_MS] ?: 5000 }
+    val readerRetryCount: Flow<Int> = context.dataStore.data.map { it[KEY_READER_RETRY_COUNT] ?: 3 }
+    val readerRetryBaseDelayMs: Flow<Int> = context.dataStore.data.map { it[KEY_READER_RETRY_BASE_DELAY_MS] ?: 2000 }
 
     suspend fun updateBaseUrl(url: String) { context.dataStore.edit { it[KEY_BASE_URL] = url } }
     suspend fun updateApiKey(key: String) { context.dataStore.edit { it[KEY_API_KEY] = key } }
@@ -45,6 +48,9 @@ class SettingsRepository(private val context: Context) {
     suspend fun updateReaderParagraphGapMs(gapMs: Int) { context.dataStore.edit { it[KEY_READER_PARAGRAPH_GAP_MS] = gapMs } }
     suspend fun updateReaderSleepMinutes(minutes: Int) { context.dataStore.edit { it[KEY_READER_SLEEP_MINUTES] = minutes } }
     suspend fun updateReaderStopAfterChapters(chapters: Int) { context.dataStore.edit { it[KEY_READER_STOP_AFTER_CHAPTERS] = chapters } }
+    suspend fun updateReaderConservativeRequestIntervalMs(intervalMs: Int) { context.dataStore.edit { it[KEY_READER_CONSERVATIVE_REQUEST_INTERVAL_MS] = intervalMs } }
+    suspend fun updateReaderRetryCount(count: Int) { context.dataStore.edit { it[KEY_READER_RETRY_COUNT] = count } }
+    suspend fun updateReaderRetryBaseDelayMs(delayMs: Int) { context.dataStore.edit { it[KEY_READER_RETRY_BASE_DELAY_MS] = delayMs } }
 
     fun getEngineConfig(engineId: String, key: String): Flow<String> {
         val configKey = stringPreferencesKey("${engineId}_$key")
@@ -71,5 +77,8 @@ class SettingsRepository(private val context: Context) {
         private val KEY_READER_PARAGRAPH_GAP_MS = intPreferencesKey("reader_paragraph_gap_ms")
         private val KEY_READER_SLEEP_MINUTES = intPreferencesKey("reader_sleep_minutes")
         private val KEY_READER_STOP_AFTER_CHAPTERS = intPreferencesKey("reader_stop_after_chapters")
+        private val KEY_READER_CONSERVATIVE_REQUEST_INTERVAL_MS = intPreferencesKey("reader_conservative_request_interval_ms")
+        private val KEY_READER_RETRY_COUNT = intPreferencesKey("reader_retry_count")
+        private val KEY_READER_RETRY_BASE_DELAY_MS = intPreferencesKey("reader_retry_base_delay_ms")
     }
 }

@@ -10,6 +10,7 @@ import java.security.MessageDigest
 object AudioCache {
     private const val MAX_CACHE_SIZE = 50
     private const val CACHE_TTL_MS = 5 * 60 * 1000L // 5 分钟
+    private const val CACHE_VERSION = "reader-tts-v2"
 
     private data class CacheEntry(
         val audioData: ByteArray,
@@ -22,7 +23,7 @@ object AudioCache {
      * 生成缓存键
      */
     fun generateKey(text: String, voice: String, style: String?): String {
-        val raw = "$text|$voice|${style ?: ""}"
+        val raw = "$CACHE_VERSION|$text|$voice|${style ?: ""}"
         return md5(raw)
     }
 

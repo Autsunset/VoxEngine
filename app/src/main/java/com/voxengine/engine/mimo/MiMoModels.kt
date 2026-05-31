@@ -50,12 +50,8 @@ class MiMoTTSClient(
         optimizeTextPreview: Boolean = false
     ): SynthesisResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
-        // 风格标签放在 assistant 内容开头，格式：(风格)
-        val content = if (style != null && style != "无") {
-            "($style)$text"
-        } else {
-            text
-        }
+        // 风格提示词不要拼进正文，避免服务端把提示词当作文本读出来。
+        val content = text
 
         // 根据模型类型构建不同的请求体
         val (userContent, assistantContent, audioConfig) = when (model) {
@@ -93,8 +89,9 @@ class MiMoTTSClient(
         )
 
         val json = gson.toJson(request)
-        Log.d(TAG, "Request model=$model voice=$voice json=$json")
-        LogManager.appendLog("D", TAG, "Request model=$model voice=$voice json=$json")
+        val styleInfo = style?.takeIf { it != "无" }?.let { " style=$it" }.orEmpty()
+        Log.d(TAG, "Request model=$model voice=$voice textLength=${content.length}$styleInfo")
+        LogManager.appendLog("D", TAG, "Request model=$model voice=$voice textLength=${content.length}$styleInfo")
 
         val httpRequest = Request.Builder()
             .url("$baseUrl/v1/chat/completions")
