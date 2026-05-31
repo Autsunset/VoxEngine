@@ -71,6 +71,7 @@ fun TestScreen() {
     val currentEngineId by settings.currentEngine.collectAsState(initial = "mimo")
     val apiKey by settings.apiKey.collectAsState(initial = "")
     val baseUrl by settings.baseUrl.collectAsState(initial = "https://api.xiaomimimo.com")
+    val speed by settings.speed.collectAsState(initial = 1.0f)
     val activeEngine = remember(currentEngineId) { EngineRegistry.get(currentEngineId) }
 
     val voices by produceState(initialValue = emptyList<com.voxengine.engine.VoiceInfo>(), activeEngine) {
@@ -270,20 +271,20 @@ fun TestScreen() {
                                     text = text,
                                     voice = selectedVoiceId,
                                     style = selectedStyle.ifBlank { "无" },
-                                    speed = 1.0f,
+                                    speed = speed,
                                     engineId = currentEngineId
                                 )
                             )
 
                             playJob = scope.launch(Dispatchers.IO) {
-                                playAudioWithControl(result.audioData) { track ->
+                                playAudioWithControl(result.audioData, speed) { track ->
                                     currentTrack = track
                                 }
                             }
                             playJob?.join()
                             if (isPlaying) statusText = "播放完成"
                         } catch (e: Exception) {
-                            statusText = "错误: ${e.message}"
+                            statusText = "错误: ${com.voxengine.util.TtsErrors.friendly(e)}"
                         } finally {
                             currentTrack = null
                             isSynthesizing = false
@@ -415,6 +416,7 @@ fun TestScreen() {
  */
 private suspend fun playAudioWithControl(
     wavData: ByteArray,
+    speed: Float = 1.0f,
     onTrackReady: (AudioTrack) -> Unit
 ) = withContext(Dispatchers.IO) {
     val sampleRate = AudioUtils.getWavSampleRate(wavData)
@@ -445,6 +447,9 @@ private suspend fun playAudioWithControl(
         .build()
 
     track.write(pcmData, 0, pcmData.size)
+    if (speed > 0f && kotlin.math.abs(speed - 1.0f) > 0.01f) {
+        runCatching { track.playbackParams = track.playbackParams.setSpeed(speed) }
+    }
     track.play()
     onTrackReady(track) // 暴露 track 引用
     while (track.playState == AudioTrack.PLAYSTATE_PLAYING) {

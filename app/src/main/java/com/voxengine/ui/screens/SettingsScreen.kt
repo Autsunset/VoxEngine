@@ -80,6 +80,7 @@ fun SettingsScreen() {
     val darkMode by settings.darkMode.collectAsState(initial = false)
     val currentEngineId by settings.currentEngine.collectAsState(initial = "mimo")
     val parallelSynthesis by settings.parallelSynthesis.collectAsState(initial = false)
+    val ttsConcurrency by settings.ttsConcurrency.collectAsState(initial = 3)
 
     var baseUrlInput by remember { mutableStateOf(baseUrl) }
     var apiKeyInput by remember { mutableStateOf(apiKey) }
@@ -188,6 +189,21 @@ fun SettingsScreen() {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (parallelSynthesis) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("并发条数: $ttsConcurrency")
+                    Slider(
+                        value = ttsConcurrency.toFloat(),
+                        onValueChange = { scope.launch { settings.updateTtsConcurrency(it.toInt()) } },
+                        valueRange = 1f..8f,
+                        steps = 6
+                    )
+                    Text(
+                        "同时在途的请求数。调高首字更快，但过高易触发限流(429)。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
 

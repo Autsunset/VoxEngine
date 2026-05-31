@@ -6,6 +6,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.TextToSpeechService
 import android.util.Log
 import com.voxengine.audio.AudioUtils
+import com.voxengine.audio.SpeedAdjuster
 import com.voxengine.data.SettingsRepository
 import com.voxengine.engine.EngineRegistry
 import com.voxengine.engine.mimo.MiMoEngine
@@ -24,6 +25,8 @@ class VoxEngineTTSService : TextToSpeechService() {
     private var currentStyle = "无"
     private var currentSpeed = 1.0f
     private var parallelSynthesis = false
+    private var ttsConcurrency = 3
+    @Volatile private var stopRequested = false
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
@@ -37,6 +40,7 @@ class VoxEngineTTSService : TextToSpeechService() {
             currentStyle = runBlocking { s.defaultStyle.first() }
             currentSpeed = runBlocking { s.speed.first() }
             parallelSynthesis = runBlocking { s.parallelSynthesis.first() }
+            ttsConcurrency = runBlocking { s.ttsConcurrency.first() }
 
             if (!EngineRegistry.isRegistered(engineId)) {
                 val engine = MiMoEngine(s)
@@ -47,6 +51,7 @@ class VoxEngineTTSService : TextToSpeechService() {
             serviceScope.launch { s.defaultStyle.collect { currentStyle = it } }
             serviceScope.launch { s.speed.collect { currentSpeed = it } }
             serviceScope.launch { s.parallelSynthesis.collect { parallelSynthesis = it } }
+            serviceScope.launch { s.ttsConcurrency.collect { ttsConcurrency = it } }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to init TTS engine", e)
         }
@@ -67,63 +72,94 @@ class VoxEngineTTSService : TextToSpeechService() {
             return
         }
 
+        stopRequested = false
+        // Android 以百分比传语速（100=正常）。与应用内默认语速取较大者，避免双重叠加时过慢。
+        val systemSpeed = if (request.speechRate > 0) request.speechRate / 100f else 1.0f
+        val effectiveSpeed = maxOf(currentSpeed, systemSpeed).coerceIn(0.5f, 2.0f)
+
         try {
             Log.d(TAG, "Synthesizing: ${text.take(50)}...")
             LogManager.appendLog("D", TAG, "Synthesizing: ${text.take(50)}...")
             val engineId = runBlocking { s.currentEngine.first() }
             val engine = EngineRegistry.getActive(engineId)
 
-            Log.d(TAG, "Voice=$currentVoice, Style=$currentStyle, Parallel=$parallelSynthesis")
-            LogManager.appendLog("D", TAG, "Voice=$currentVoice, Style=$currentStyle, Parallel=$parallelSynthesis")
+            Log.d(TAG, "Voice=$currentVoice, Style=$currentStyle, Parallel=$parallelSynthesis, Concurrency=$ttsConcurrency, Speed=$effectiveSpeed")
+            LogManager.appendLog("D", TAG, "Voice=$currentVoice, Style=$currentStyle, Parallel=$parallelSynthesis, Concurrency=$ttsConcurrency, Speed=$effectiveSpeed")
             val style = if (currentStyle == "无") null else currentStyle
 
-            val result = runBlocking {
-                if (parallelSynthesis && engine is MiMoEngine) {
-                    engine.synthesizeParallel(text, currentVoice, style)
-                } else {
-                    engine.synthesize(text, currentVoice, style)
+            // 24kHz PCM16 单声道（MiMo 输出格式）。先用默认采样率 start，分段写出。
+            var started = false
+            val ensureStarted = {
+                if (!started) {
+                    val r = callback.start(24000, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
+                    if (r == TextToSpeech.ERROR) throw IllegalStateException("callback.start returned error")
+                    started = true
                 }
             }
 
-            Log.d(TAG, "Got audio: ${result.audioData.size} bytes in ${result.elapsedMs}ms")
-            LogManager.appendLog("D", TAG, "Got audio: ${result.audioData.size} bytes in ${result.elapsedMs}ms")
-
-            val sampleRate = AudioUtils.getWavSampleRate(result.audioData)
-            val pcmData = AudioUtils.extractPcmData(result.audioData)
-
-            val startResult = callback.start(sampleRate, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
-            if (startResult == TextToSpeech.ERROR) {
-                Log.e(TAG, "callback.start returned error, aborting")
-                return
-            }
-
-            val chunkSize = 4096
-            var offset = 0
-            var errorCount = 0
-            while (offset < pcmData.size) {
-                val end = minOf(offset + chunkSize, pcmData.size)
-                val chunk = pcmData.copyOfRange(offset, end)
-                val res = callback.audioAvailable(chunk, 0, chunk.size)
-                if (res == TextToSpeech.ERROR) {
-                    errorCount++
-                    if (errorCount > 3) {
-                        Log.e(TAG, "audioAvailable error count exceeded, aborting")
-                        break
+            if (parallelSynthesis && engine is MiMoEngine) {
+                // 流式：分句有界并发，按序就绪即写出，首字延迟≈单句延迟。
+                runBlocking {
+                    engine.synthesizeStreaming(text, currentVoice, style, ttsConcurrency) { pcm ->
+                        ensureStarted()
+                        writePcm(callback, applySpeed(pcm, 24000, effectiveSpeed))
                     }
-                } else {
-                    errorCount = 0
                 }
-                offset = end
+            } else {
+                val result = runBlocking { engine.synthesize(text, currentVoice, style) }
+                Log.d(TAG, "Got audio: ${result.audioData.size} bytes in ${result.elapsedMs}ms")
+                LogManager.appendLog("D", TAG, "Got audio: ${result.audioData.size} bytes in ${result.elapsedMs}ms")
+                val sampleRate = AudioUtils.getWavSampleRate(result.audioData)
+                val pcmData = AudioUtils.extractPcmData(result.audioData)
+                if (!started) {
+                    val r = callback.start(sampleRate, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
+                    if (r == TextToSpeech.ERROR) {
+                        Log.e(TAG, "callback.start returned error, aborting")
+                        return
+                    }
+                    started = true
+                }
+                writePcm(callback, applySpeed(pcmData, sampleRate, effectiveSpeed))
             }
 
             callback.done()
         } catch (e: Exception) {
             Log.e(TAG, "Synthesis failed", e)
+            LogManager.appendLog("E", TAG, "Synthesis failed: ${e.message}")
             callback.error()
         }
     }
 
-    override fun onStop() {}
+    private fun applySpeed(pcm: ByteArray, sampleRate: Int, speed: Float): ByteArray =
+        SpeedAdjuster.process(pcm, sampleRate, 1, speed)
+
+    /** 把 PCM 分块写入回调。返回 false 表示应中止（被停止或写错误过多）。 */
+    private fun writePcm(callback: SynthesisCallback, pcmData: ByteArray): Boolean {
+        val chunkSize = 4096
+        var offset = 0
+        var errorCount = 0
+        while (offset < pcmData.size) {
+            if (stopRequested) return false
+            val end = minOf(offset + chunkSize, pcmData.size)
+            val chunk = pcmData.copyOfRange(offset, end)
+            val res = callback.audioAvailable(chunk, 0, chunk.size)
+            if (res == TextToSpeech.ERROR) {
+                errorCount++
+                if (errorCount > 3) {
+                    Log.e(TAG, "audioAvailable error count exceeded, aborting")
+                    return false
+                }
+            } else {
+                errorCount = 0
+            }
+            offset = end
+        }
+        return true
+    }
+
+    override fun onStop() {
+        stopRequested = true
+    }
 
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
         return TextToSpeech.LANG_AVAILABLE

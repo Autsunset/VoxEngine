@@ -28,11 +28,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
-import java.io.IOException
 
 class ReaderPlaybackService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -114,6 +114,9 @@ class ReaderPlaybackService : Service() {
 
     private suspend fun runPlaybackSafely() {
         val playbackState = state ?: return
+        playbackState.speed = withContext(Dispatchers.IO) {
+            com.voxengine.data.SettingsRepository(applicationContext).speed.first()
+        }
         val engine = EngineRegistry.get(playbackState.engineId)
         if (engine == null) {
             updateNotification("未找到引擎 ${playbackState.engineId}", false)
@@ -185,7 +188,7 @@ class ReaderPlaybackService : Service() {
                 val chunk = result
                     .onFailure { error ->
                         LogManager.appendLog("E", TAG, "Paragraph ${key.paragraphIndex}.${key.chunkIndex} synthesis failed: ${error.message}")
-                        updateNotification(friendlySynthesisError(error), false)
+                        updateNotification(com.voxengine.util.TtsErrors.friendly(error), false)
                         audioCache.remove(key)
                         pageFailed = true
                         playbackFailed = true
@@ -349,36 +352,16 @@ class ReaderPlaybackService : Service() {
         retryCount: Int,
         retryBaseDelayMs: Long
     ): AudioChunk {
-        var attempt = 0
-        var lastError: Throwable? = null
-        val maxAttempts = 1 + retryCount
-        while (attempt < maxAttempts) {
-            try {
-                if (attempt > 0) delay(retryBaseDelayMs * attempt * attempt)
-                if (conservativeSynthesis) throttleConservativeSynthesis(conservativeRequestIntervalMs)
-                return AudioChunk(paragraphIndex, engine.synthesize(paragraph, voice, style).audioData)
-            } catch (error: Throwable) {
-                if (error is CancellationException) throw error
-                lastError = error
-                val retryable = error.message?.contains("429") == true || error is IOException
-                if (!retryable || attempt >= maxAttempts - 1) {
-                    LogManager.appendLog("E", TAG, "Paragraph $paragraphIndex synthesis failed: ${error.message}")
-                    throw error
-                }
-                LogManager.appendLog("W", TAG, "Paragraph $paragraphIndex synthesis retry ${attempt + 1}: ${error.message}")
-                attempt += 1
-            }
-        }
-        throw lastError ?: IllegalStateException("段落合成失败")
-    }
-
-    private fun friendlySynthesisError(error: Throwable): String {
-        val message = error.message.orEmpty()
-        return if (message.contains("429")) {
-            "合成过快被限流，请调大段落间隔或缩短克隆音频后再试"
-        } else {
-            "段落合成失败: ${message.ifBlank { "未知错误" }}"
-        }
+        val audioData = com.voxengine.util.RetryPolicy.withRetry(
+            retryCount = retryCount,
+            baseDelayMs = retryBaseDelayMs,
+            beforeAttempt = { if (conservativeSynthesis) throttleConservativeSynthesis(conservativeRequestIntervalMs) },
+            onRetry = { attempt, error ->
+                LogManager.appendLog("W", TAG, "Paragraph $paragraphIndex synthesis retry $attempt: ${error.message}")
+            },
+            block = { engine.synthesize(paragraph, voice, style).audioData }
+        )
+        return AudioChunk(paragraphIndex, audioData)
     }
 
     private suspend fun throttleConservativeSynthesis(intervalMs: Long) {
@@ -452,6 +435,10 @@ class ReaderPlaybackService : Service() {
         currentTrack = track
         try {
             track.write(pcmData, 0, pcmData.size)
+            val speed = state?.speed ?: 1.0f
+            if (speed > 0f && kotlin.math.abs(speed - 1.0f) > 0.01f) {
+                runCatching { track.playbackParams = track.playbackParams.setSpeed(speed) }
+            }
             track.play()
             while (currentCoroutineContext().isActive) {
                 val stillPlaying = runCatching {
@@ -588,7 +575,8 @@ class ReaderPlaybackService : Service() {
         val stopAfterChapters: Int,
         val conservativeRequestIntervalMs: Long,
         val retryCount: Int,
-        val retryBaseDelayMs: Long
+        val retryBaseDelayMs: Long,
+        var speed: Float = 1.0f
     )
 
     private data class PlaybackPosition(val chapterIndex: Int, val pageIndex: Int)

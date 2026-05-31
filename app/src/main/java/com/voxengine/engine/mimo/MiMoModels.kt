@@ -50,12 +50,14 @@ class MiMoTTSClient(
         optimizeTextPreview: Boolean = false
     ): SynthesisResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
-        // 风格提示词不要拼进正文，避免服务端把提示词当作文本读出来。
         val content = text
+        // 风格作为自然语言指令放进 user 消息，而非拼进正文，避免服务端把提示词当文本读出来。
+        val styleInstruction = style?.trim()?.takeIf { it.isNotEmpty() && it != "无" }
 
         // 根据模型类型构建不同的请求体
         val (userContent, assistantContent, audioConfig) = when (model) {
             MODEL_DESIGN -> {
+                // design 模型的 user 消息已是音色描述，本期不在其上叠加风格指令。
                 if (optimizeTextPreview) {
                     // optimizeTextPreview 模式：只需 user 描述，无需 assistant 文本
                     Triple(voice, null, AudioConfig(format = "wav", optimizeTextPreview = true))
@@ -63,15 +65,9 @@ class MiMoTTSClient(
                     Triple(voice, content, AudioConfig(format = "wav"))
                 }
             }
-            MODEL_CLONE -> {
-                Pair("", AudioConfig(format = "wav", voice = voice)).let {
-                    Triple(it.first, content, it.second)
-                }
-            }
             else -> {
-                Pair("", AudioConfig(format = "wav", voice = voice)).let {
-                    Triple(it.first, content, it.second)
-                }
+                // preset / clone：user 消息承载风格指令（可为空），voice 进 audio.voice。
+                Triple(styleInstruction ?: "", content, AudioConfig(format = "wav", voice = voice))
             }
         }
 

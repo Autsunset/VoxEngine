@@ -14,11 +14,13 @@ import com.voxengine.engine.VoiceInfo as EngineVoiceInfo
 import com.voxengine.engine.SynthesisResult
 import com.voxengine.engine.VoiceType
 import com.voxengine.util.LogManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 class MiMoEngine(
     private val settingsRepository: SettingsRepository
@@ -53,6 +55,19 @@ class MiMoEngine(
         client?.updateConfig(baseUrl, apiKey, userAgent)
     }
 
+    private data class ResolvedVoice(val model: String, val voiceParam: String)
+
+    /** 根据音色名解析出请求用的模型与 voice 参数（自定义音色查库，否则按预设处理）。 */
+    private suspend fun resolveVoice(voice: String): ResolvedVoice {
+        val db = AppDatabase.getDatabase(com.voxengine.VoxEngineApplication.instance)
+        val customVoice = db.voiceDao().getVoiceByName(voice)
+        return when (customVoice?.type) {
+            "clone" -> ResolvedVoice(MiMoTTSClient.MODEL_CLONE, customVoice.voiceParam)
+            "design" -> ResolvedVoice(MiMoTTSClient.MODEL_DESIGN, customVoice.voiceParam)
+            else -> ResolvedVoice(MiMoTTSClient.MODEL_PRESET, voice)
+        }
+    }
+
     private fun splitTextToSentences(text: String): List<String> {
         // 按中文句末标点分段，保留引号和内容在一起
         val sentences = mutableListOf<String>()
@@ -76,95 +91,59 @@ class MiMoEngine(
         return if (sentences.isEmpty()) listOf(text) else sentences
     }
 
-    suspend fun synthesizeParallel(
+    /**
+     * 流式合成：分句后用有界并发预取，按原始顺序就绪即回调该句 PCM。
+     * 首字延迟≈单句延迟，而非整段。供系统 TTS 路径边合成边播放。
+     * @param concurrency 同时在途的请求数上限（1-8）。
+     * @param onPcm 每句就绪时回调其 PCM（已从 WAV 抽取），按句子原始顺序。
+     */
+    suspend fun synthesizeStreaming(
         text: String,
         voice: String,
-        style: String?
-    ): SynthesisResult {
-        val startTime = System.currentTimeMillis()
+        style: String?,
+        concurrency: Int,
+        onPcm: suspend (ByteArray) -> Unit
+    ) {
         val c = getClient()
-
-        // 检查自定义音色
-        val db = AppDatabase.getDatabase(com.voxengine.VoxEngineApplication.instance)
-        val customVoice = db.voiceDao().getVoiceByName(voice)
-
-        val model: String
-        val voiceParam: String
-        when {
-            customVoice != null && customVoice.type == "clone" -> {
-                model = MiMoTTSClient.MODEL_CLONE
-                voiceParam = customVoice.voiceParam
-            }
-            customVoice != null && customVoice.type == "design" -> {
-                model = MiMoTTSClient.MODEL_DESIGN
-                voiceParam = customVoice.voiceParam
-            }
-            else -> {
-                model = MiMoTTSClient.MODEL_PRESET
-                voiceParam = voice
-            }
-        }
-
+        val resolved = resolveVoice(voice)
         val sentences = splitTextToSentences(text)
-        Log.d(TAG, "Parallel synthesis: ${sentences.size} segments from ${text.length} chars")
-        LogManager.appendLog("D", TAG, "Parallel synthesis: ${sentences.size} segments from ${text.length} chars")
+        val limit = concurrency.coerceIn(1, 8)
+        Log.d(TAG, "Streaming synthesis: ${sentences.size} segments, concurrency=$limit")
+        LogManager.appendLog("D", TAG, "Streaming synthesis: ${sentences.size} segments, concurrency=$limit")
 
-        // 并行请求每个句子，保留索引以便正确排序
-        val indexedResults = coroutineScope {
-            sentences.mapIndexed { index, sentence ->
+        coroutineScope {
+            val semaphore = Semaphore(limit)
+            // 全部立即排队，由 semaphore 控制实际在途数；async 让后续句子在当前句播放时已在合成。
+            val jobs = sentences.map { sentence ->
                 async(Dispatchers.IO) {
-                    try {
-                        val result = c.synthesize(
-                            text = sentence,
-                            voice = voiceParam,
-                            model = model,
-                            style = style
+                    semaphore.withPermit {
+                        com.voxengine.util.RetryPolicy.withRetry(
+                            retryCount = 3,
+                            baseDelayMs = 1500,
+                            onRetry = { attempt, error ->
+                                LogManager.appendLog("W", TAG, "Streaming segment retry $attempt: ${error.message}")
+                            },
+                            block = { c.synthesize(text = sentence, voice = resolved.voiceParam, model = resolved.model, style = style) }
                         )
-                        Log.d(TAG, "Segment $index done: ${result.audioData.size} bytes")
-                        LogManager.appendLog("D", TAG, "Segment $index done: ${result.audioData.size} bytes")
-                        IndexedValue(index, result)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Segment $index failed: ${e.message}")
-                        LogManager.appendLog("E", TAG, "Segment $index failed: ${e.message}")
-                        IndexedValue(index, null)
                     }
                 }
-            }.awaitAll()
+            }
+            // 按原始顺序消费：第 i 句就绪立即出声，i+1… 仍在后台合成。
+            for ((index, job) in jobs.withIndex()) {
+                val result = try {
+                    job.await()
+                } catch (e: CancellationException) {
+                    jobs.forEach { it.cancel() }
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "Streaming segment $index failed: ${e.message}")
+                    LogManager.appendLog("E", TAG, "Streaming segment $index failed: ${e.message}")
+                    jobs.forEach { it.cancel() }
+                    throw e
+                }
+                onPcm(AudioUtils.extractPcmData(result.audioData))
+            }
         }
-
-        // 按原始索引排序，提取 PCM 数据并拼接
-        val sortedResults = indexedResults
-            .filter { it.value != null }
-            .sortedBy { it.index }
-            .map { it.value!! }
-
-        // 提取每个结果的 PCM 数据并拼接
-        val pcmChunks = sortedResults.map { result ->
-            AudioUtils.extractPcmData(result.audioData)
-        }
-
-        if (pcmChunks.isEmpty()) throw Exception("All segments failed")
-
-        val totalPcmSize = pcmChunks.sumOf { it.size }
-        val combinedPcm = ByteArray(totalPcmSize)
-        var offset = 0
-        for (chunk in pcmChunks) {
-            System.arraycopy(chunk, 0, combinedPcm, offset, chunk.size)
-            offset += chunk.size
-        }
-
-        // 包装为 WAV
-        val wavData = AudioUtils.pcmToWav(combinedPcm, 24000, 1, 16)
-        val elapsed = System.currentTimeMillis() - startTime
-        Log.d(TAG, "Parallel synthesis done: ${wavData.size} bytes in ${elapsed}ms")
-        LogManager.appendLog("D", TAG, "Parallel synthesis done: ${wavData.size} bytes in ${elapsed}ms")
-
-        return SynthesisResult(
-            audioData = wavData,
-            format = AudioFormat.WAV,
-            sampleRate = 24000,
-            elapsedMs = elapsed
-        )
     }
 
     override suspend fun synthesize(

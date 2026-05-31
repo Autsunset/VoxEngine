@@ -1,10 +1,15 @@
 package com.voxengine.engine.edge
 
+import com.voxengine.audio.AudioUtils
 import com.voxengine.data.SettingsRepository
+import com.voxengine.engine.AudioCache
+import com.voxengine.engine.AudioFormat
 import com.voxengine.engine.TTSEngine
 import com.voxengine.engine.VoiceInfo
 import com.voxengine.engine.SynthesisResult
 import com.voxengine.engine.VoiceType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class EdgeTTSEngine(
     private val settingsRepository: SettingsRepository
@@ -12,38 +17,73 @@ class EdgeTTSEngine(
 
     override val id = "edge"
     override val name = "Edge TTS"
-    override val description = "微软 Edge TTS 引擎（开发中）"
+    override val description = "微软 Edge TTS 引擎（免费）"
     override val supportsVoiceClone = false
     override val supportsVoiceDesign = false
+
+    private val client by lazy { EdgeTTSClient() }
 
     override suspend fun synthesize(
         text: String,
         voice: String,
         style: String?,
         optimizeTextPreview: Boolean
-    ): SynthesisResult {
-        throw NotImplementedError("Edge TTS 引擎开发中")
+    ): SynthesisResult = withContext(Dispatchers.IO) {
+        val cacheKey = AudioCache.generateKey(text, voice, style)
+        AudioCache.get(cacheKey)?.let { cached ->
+            return@withContext SynthesisResult(
+                audioData = cached,
+                format = AudioFormat.WAV,
+                sampleRate = AudioUtils.getWavSampleRate(cached),
+                elapsedMs = 0
+            )
+        }
+
+        val startTime = System.currentTimeMillis()
+        val resolvedVoice = resolveVoiceId(voice)
+        val wav = client.synthesize(text, resolvedVoice)
+        AudioCache.put(cacheKey, wav)
+        SynthesisResult(
+            audioData = wav,
+            format = AudioFormat.WAV,
+            sampleRate = AudioUtils.getWavSampleRate(wav),
+            elapsedMs = System.currentTimeMillis() - startTime
+        )
     }
 
     override suspend fun getVoices(): List<VoiceInfo> {
         return listOf(
             VoiceInfo("zh-CN-XiaoxiaoNeural", "晓晓", "中文女声", VoiceType.PRESET, id),
             VoiceInfo("zh-CN-YunxiNeural", "云希", "中文男声", VoiceType.PRESET, id),
-            VoiceInfo("zh-CN-XiaoyiNeural", "晓依", "中文女声", VoiceType.PRESET, id),
+            VoiceInfo("zh-CN-YunjianNeural", "云健", "中文男声", VoiceType.PRESET, id),
+            VoiceInfo("zh-CN-XiaoyiNeural", "晓伊", "中文女声", VoiceType.PRESET, id),
+            VoiceInfo("zh-CN-YunyangNeural", "云扬", "中文男声(新闻)", VoiceType.PRESET, id),
+            VoiceInfo("zh-CN-liaoning-XiaobeiNeural", "晓北", "东北话女声", VoiceType.PRESET, id),
+            VoiceInfo("zh-CN-shaanxi-XiaoniNeural", "晓妮", "陕西话女声", VoiceType.PRESET, id),
+            VoiceInfo("zh-HK-HiuMaanNeural", "曉曼", "粤语女声", VoiceType.PRESET, id),
+            VoiceInfo("zh-TW-HsiaoChenNeural", "曉臻", "台湾女声", VoiceType.PRESET, id),
             VoiceInfo("en-US-JennyNeural", "Jenny", "英文女声", VoiceType.PRESET, id),
-            VoiceInfo("en-US-GuyNeural", "Guy", "英文男声", VoiceType.PRESET, id)
+            VoiceInfo("en-US-GuyNeural", "Guy", "英文男声", VoiceType.PRESET, id),
+            VoiceInfo("en-US-AriaNeural", "Aria", "英文女声", VoiceType.PRESET, id)
         )
     }
 
     override suspend fun getStyles(): List<String> = emptyList()
 
-    override fun isConfigured(): Boolean = false
+    /** 设置页存 voice.name、Reader 存 voice.id，统一解析回 Edge 需要的完整 voice id。 */
+    private suspend fun resolveVoiceId(voice: String): String {
+        if (voice.contains("Neural")) return voice
+        val match = getVoices().firstOrNull { it.name == voice || it.id == voice }
+        return match?.id ?: "zh-CN-XiaoxiaoNeural"
+    }
+
+    override fun isConfigured(): Boolean = true
 
     override suspend fun cloneVoice(name: String, referenceAudio: ByteArray): VoiceInfo {
-        throw NotImplementedError("Edge TTS 引擎开发中")
+        throw NotImplementedError("Edge TTS 不支持音色克隆")
     }
 
     override suspend fun designVoice(description: String): VoiceInfo {
-        throw NotImplementedError("Edge TTS 引擎开发中")
+        throw NotImplementedError("Edge TTS 不支持音色设计")
     }
 }

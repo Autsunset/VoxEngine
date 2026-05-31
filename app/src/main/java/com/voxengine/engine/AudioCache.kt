@@ -8,16 +8,18 @@ import java.security.MessageDigest
  * 对相同文本+音色+风格+语速的合成结果缓存，避免重复 API 调用
  */
 object AudioCache {
-    private const val MAX_CACHE_SIZE = 50
+    private const val MAX_CACHE_BYTES = 32 * 1024 * 1024 // 32MB，按字节封顶避免大 WAV 撑爆内存
     private const val CACHE_TTL_MS = 5 * 60 * 1000L // 5 分钟
-    private const val CACHE_VERSION = "reader-tts-v2"
+    private const val CACHE_VERSION = "reader-tts-v3"
 
     private data class CacheEntry(
         val audioData: ByteArray,
         val timestamp: Long
     )
 
-    private val cache = LruCache<String, CacheEntry>(MAX_CACHE_SIZE)
+    private val cache = object : LruCache<String, CacheEntry>(MAX_CACHE_BYTES) {
+        override fun sizeOf(key: String, value: CacheEntry): Int = value.audioData.size
+    }
 
     /**
      * 生成缓存键
