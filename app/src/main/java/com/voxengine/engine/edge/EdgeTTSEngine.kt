@@ -64,7 +64,15 @@ class EdgeTTSEngine(
             VoiceInfo("zh-TW-HsiaoChenNeural", "曉臻", "台湾女声", VoiceType.PRESET, id),
             VoiceInfo("en-US-JennyNeural", "Jenny", "英文女声", VoiceType.PRESET, id),
             VoiceInfo("en-US-GuyNeural", "Guy", "英文男声", VoiceType.PRESET, id),
-            VoiceInfo("en-US-AriaNeural", "Aria", "英文女声", VoiceType.PRESET, id)
+            VoiceInfo("en-US-AriaNeural", "Aria", "英文女声", VoiceType.PRESET, id),
+            // 日语音色（MiMo 不支持日语，会把日文汉字按中文读；日语请使用以下 Edge 音色）
+            VoiceInfo("ja-JP-NanamiNeural", "七海", "日语女声", VoiceType.PRESET, id),
+            VoiceInfo("ja-JP-KeitaNeural", "圭太", "日语男声", VoiceType.PRESET, id),
+            VoiceInfo("ja-JP-AoiNeural", "葵", "日语女声", VoiceType.PRESET, id),
+            VoiceInfo("ja-JP-DaichiNeural", "大智", "日语男声", VoiceType.PRESET, id),
+            VoiceInfo("ja-JP-ShioriNeural", "诗织", "日语女声", VoiceType.PRESET, id),
+            VoiceInfo("ja-JP-NaokiNeural", "直树", "日语男声", VoiceType.PRESET, id),
+            VoiceInfo("ja-JP-MayuNeural", "真由", "日语女声", VoiceType.PRESET, id)
         )
     }
 

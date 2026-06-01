@@ -142,13 +142,26 @@ class EdgeTTSClient {
 
     private fun buildSsmlMessage(requestId: String, voice: String, text: String): String {
         val timestamp = isoTimestamp()
-        val ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>" +
+        // 从音色名推导语言区域（如 ja-JP-NanamiNeural -> ja-JP），让日语等非中文音色用正确的 lang，
+        // 否则固定 zh-CN 会让服务端按中文处理，日文汉字被读成中文。
+        val lang = localeFromVoice(voice)
+        val ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='$lang'>" +
             "<voice name='$voice'><prosody rate='+0%' pitch='+0Hz'>${escapeXml(text)}</prosody></voice></speak>"
         return "X-RequestId:$requestId\r\n" +
             "Content-Type:application/ssml+xml\r\n" +
             "X-Timestamp:$timestamp\r\n" +
             "Path:ssml\r\n\r\n" +
             ssml
+    }
+
+    /** 取音色名前两段作为语言区域（语言-国家）。无法解析时回退 zh-CN。 */
+    private fun localeFromVoice(voice: String): String {
+        val parts = voice.split("-")
+        return if (parts.size >= 2 && parts[0].isNotEmpty() && parts[1].isNotEmpty()) {
+            "${parts[0]}-${parts[1]}"
+        } else {
+            "zh-CN"
+        }
     }
 
     /** 在二进制帧里定位音频负载起点（"Path:audio\r\n" 之后）。 */

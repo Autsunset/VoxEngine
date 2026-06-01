@@ -63,12 +63,20 @@
         </activity>
 
         <!-- TTS 引擎服务 -->
+        <!--
+            不要给本服务声明 android:permission。
+            android.permission.BIND_TEXT_TO_SPEECH_SERVICE 并不是 Android 系统中真实存在的权限
+            （系统只有 BIND_INPUT_METHOD / BIND_ACCESSIBILITY_SERVICE / BIND_TEXT_SERVICE 等，
+            并没有 TTS 的 BIND 权限）。一旦声明该权限，调用方（如阅读 Legado）就需要持有一个
+            谁都拿不到的权限才能 bindService，在严格校验的 ROM（如 MIUI / Android 11）上会抛出
+            SecurityException: Not allowed to bind to service ... act=android.intent.action.TTS_SERVICE。
+            系统 TTS 引擎本就允许任意应用通过 TextToSpeech 框架绑定，故保持 exported 且不加权限即可。
+        -->
         <service
             android:name=".tts.VoxEngineTTSService"
             android:enabled="true"
             android:exported="true"
-            android:label="@string/app_name"
-            android:permission="android.permission.BIND_TEXT_TO_SPEECH_SERVICE">
+            android:label="@string/app_name">
             <intent-filter>
                 <action android:name="android.intent.action.TTS_SERVICE" />
                 <category android:name="android.intent.category.DEFAULT" />
