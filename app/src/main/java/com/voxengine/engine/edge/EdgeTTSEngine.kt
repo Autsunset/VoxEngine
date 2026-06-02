@@ -8,6 +8,7 @@ import com.voxengine.engine.TTSEngine
 import com.voxengine.engine.VoiceInfo
 import com.voxengine.engine.SynthesisResult
 import com.voxengine.engine.VoiceType
+import com.voxengine.util.SpeechTextNormalizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -29,7 +30,8 @@ class EdgeTTSEngine(
         style: String?,
         optimizeTextPreview: Boolean
     ): SynthesisResult = withContext(Dispatchers.IO) {
-        val cacheKey = AudioCache.generateKey(text, voice, style)
+        val speechText = SpeechTextNormalizer.normalize(text)
+        val cacheKey = AudioCache.generateKey(speechText, voice, style)
         AudioCache.get(cacheKey)?.let { cached ->
             return@withContext SynthesisResult(
                 audioData = cached,
@@ -41,7 +43,7 @@ class EdgeTTSEngine(
 
         val startTime = System.currentTimeMillis()
         val resolvedVoice = resolveVoiceId(voice)
-        val wav = client.synthesize(text, resolvedVoice)
+        val wav = client.synthesize(speechText, resolvedVoice)
         AudioCache.put(cacheKey, wav)
         SynthesisResult(
             audioData = wav,

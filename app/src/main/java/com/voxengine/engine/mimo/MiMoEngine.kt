@@ -14,6 +14,7 @@ import com.voxengine.engine.VoiceInfo as EngineVoiceInfo
 import com.voxengine.engine.SynthesisResult
 import com.voxengine.engine.VoiceType
 import com.voxengine.util.LogManager
+import com.voxengine.util.SpeechTextNormalizer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -70,9 +71,10 @@ class MiMoEngine(
 
     private fun splitTextToSentences(text: String): List<String> {
         // 按中文句末标点分段，保留引号和内容在一起
+        val normalizedText = SpeechTextNormalizer.normalize(text)
         val sentences = mutableListOf<String>()
         val sb = StringBuilder()
-        for (ch in text) {
+        for (ch in normalizedText) {
             sb.append(ch)
             if (ch in charArrayOf('。', '！', '？', '；', '!', '?', ';', '\n')) {
                 val s = sb.toString().trim()
@@ -88,7 +90,7 @@ class MiMoEngine(
         if (remaining.isNotEmpty() && remaining.any { it.isLetterOrDigit() }) {
             sentences.add(remaining)
         }
-        return if (sentences.isEmpty()) listOf(text) else sentences
+        return if (sentences.isEmpty()) listOf(normalizedText) else sentences
     }
 
     /**
@@ -153,7 +155,8 @@ class MiMoEngine(
         optimizeTextPreview: Boolean
     ): SynthesisResult {
         // 检查缓存（仅非 optimizeTextPreview 模式缓存）
-        val cacheKey = AudioCache.generateKey(text, voice, style)
+        val speechText = SpeechTextNormalizer.normalize(text)
+        val cacheKey = AudioCache.generateKey(speechText, voice, style)
         if (!optimizeTextPreview) {
             val cachedAudio = AudioCache.get(cacheKey)
             if (cachedAudio != null) {
@@ -177,7 +180,7 @@ class MiMoEngine(
             when (customVoice.type) {
                 "clone" -> {
                     c.synthesize(
-                        text = text,
+                        text = speechText,
                         voice = customVoice.voiceParam,
                         model = MiMoTTSClient.MODEL_CLONE,
                         style = style
@@ -185,7 +188,7 @@ class MiMoEngine(
                 }
                 "design" -> {
                     c.synthesize(
-                        text = text,
+                        text = speechText,
                         voice = customVoice.voiceParam,
                         model = MiMoTTSClient.MODEL_DESIGN,
                         style = style,
@@ -193,11 +196,11 @@ class MiMoEngine(
                     )
                 }
                 else -> {
-                    c.synthesize(text, voice, MiMoTTSClient.MODEL_PRESET, style)
+                    c.synthesize(speechText, voice, MiMoTTSClient.MODEL_PRESET, style)
                 }
             }
         } else {
-            c.synthesize(text, voice, MiMoTTSClient.MODEL_PRESET, style)
+            c.synthesize(speechText, voice, MiMoTTSClient.MODEL_PRESET, style)
         }
 
         // 存入缓存

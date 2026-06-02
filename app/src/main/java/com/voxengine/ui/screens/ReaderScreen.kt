@@ -695,9 +695,17 @@ private fun ReaderPage(
         val measuredPages = remember(chapters, chapterIndex, maxWidth, maxHeight, textMeasurer, titleStyle, pageInfoStyle, bodyStyle) {
             measureChapterPagesForIndex(chapterIndex)
         }
+        val adjacentMeasuredPages = remember(chapters, chapterIndex, maxWidth, maxHeight, textMeasurer, titleStyle, pageInfoStyle, bodyStyle) {
+            listOf(chapterIndex - 1, chapterIndex + 1)
+                .filter { it in chapters.indices }
+                .associateWith { measureChapterPagesForIndex(it) }
+        }
         val displayPages = measuredPages.ifEmpty { pages }
-        LaunchedEffect(chapterIndex, measuredPages) {
+        LaunchedEffect(chapterIndex, measuredPages, adjacentMeasuredPages) {
             onPagesMeasured(chapterIndex, measuredPages)
+            adjacentMeasuredPages.forEach { (measuredChapterIndex, measuredChapterPages) ->
+                onPagesMeasured(measuredChapterIndex, measuredChapterPages)
+            }
             val averagePageLength = measuredPages.map { it.text.length }.takeIf { it.isNotEmpty() }?.average()?.roundToInt() ?: 220
             onPageTargetChanged(averagePageLength.coerceIn(90, 520))
         }

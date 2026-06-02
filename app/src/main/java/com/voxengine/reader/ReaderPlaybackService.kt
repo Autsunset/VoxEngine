@@ -169,8 +169,8 @@ class ReaderPlaybackService : Service() {
                 prefetchTail = prefetchTail
             )
 
-            val currentKeys = chunkKeysForPlayback(chapters, position, playbackState, startParagraphIndex).map { it.first }
-            if (currentKeys.isEmpty()) {
+            val currentChunks = chunkKeysForPlayback(chapters, position, playbackState, startParagraphIndex)
+            if (currentChunks.isEmpty()) {
                 LogManager.appendLog("E", TAG, "Page synthesis returned no playable chunks")
                 updateNotification("当前页没有可播放音频", false)
                 break
@@ -179,26 +179,50 @@ class ReaderPlaybackService : Service() {
             updateNotification("${chapter.title} · 第${position.pageIndex + 1}页", true)
             var pageFailed = false
             var lastProgressParagraphIndex = -1
-            for (index in currentKeys.indices) {
-                val key = currentKeys[index]
-                val nextKey = currentKeys.getOrNull(index + 1)
+            for (index in currentChunks.indices) {
+                val (key, chunkText) = currentChunks[index]
+                val nextKey = currentChunks.getOrNull(index + 1)?.first
                 while (currentCoroutineContext().isActive && isPaused) delay(150)
                 if (!currentCoroutineContext().isActive) break
-                val result = audioCache[key]?.await() ?: Result.failure(IllegalStateException("音频缓存不存在"))
-                val chunk = result
-                    .onFailure { error ->
-                        LogManager.appendLog("E", TAG, "Paragraph ${key.paragraphIndex}.${key.chunkIndex} synthesis failed: ${error.message}")
+
+                val preparedResult = audioCache[key]?.await()
+                audioCache.remove(key)
+                var chunk = preparedResult?.getOrNull()
+                if (chunk == null) {
+                    val preparedError = preparedResult?.exceptionOrNull()
+                    if (preparedError != null) {
+                        LogManager.appendLog("W", TAG, "Paragraph " + key.paragraphIndex + "." + key.chunkIndex + " prefetch unavailable, synthesizing inline: " + preparedError.message)
+                    } else {
+                        LogManager.appendLog("W", TAG, "Paragraph " + key.paragraphIndex + "." + key.chunkIndex + " prefetch missing, synthesizing inline")
+                    }
+                    updateNotification(chapter.title + " · 第" + (position.pageIndex + 1) + "页 补合成中", true)
+                    chunk = try {
+                        synthesizeParagraph(
+                            engine,
+                            chunkText,
+                            playbackState.voice,
+                            playbackState.style,
+                            key.paragraphIndex,
+                            conservativeSynthesis,
+                            playbackState.conservativeRequestIntervalMs,
+                            playbackState.retryCount,
+                            playbackState.retryBaseDelayMs
+                        )
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Throwable) {
+                        LogManager.appendLog("E", TAG, "Paragraph " + key.paragraphIndex + "." + key.chunkIndex + " inline synthesis failed: " + error.message)
                         updateNotification(com.voxengine.util.TtsErrors.friendly(error), false)
-                        audioCache.remove(key)
                         pageFailed = true
                         playbackFailed = true
+                        null
                     }
-                    .getOrNull() ?: break
+                }
+                if (chunk == null) break
                 playbackState.paragraphIndex = chunk.paragraphIndex
                 if (chunk.paragraphIndex != lastProgressParagraphIndex) {
                     lastProgressParagraphIndex = chunk.paragraphIndex
                     sendProgress(position.chapterIndex, position.pageIndex, chunk.paragraphIndex)
-                    db.readerBookDao().updateProgress(playbackState.uri, position.chapterIndex, position.pageIndex, chunk.paragraphIndex)
                 }
                 runCatching { playAudioChunk(chunk.audioData) }
                     .onFailure { error ->
@@ -208,7 +232,7 @@ class ReaderPlaybackService : Service() {
                         playbackFailed = true
                     }
                 if (pageFailed) break
-                audioCache.remove(key)
+                db.readerBookDao().updateProgress(playbackState.uri, position.chapterIndex, position.pageIndex, chunk.paragraphIndex)
                 if (playbackState.gapMs > 0 && nextKey?.paragraphIndex != key.paragraphIndex) {
                     delay(playbackState.gapMs)
                 }
@@ -261,29 +285,25 @@ class ReaderPlaybackService : Service() {
             }
             val previous = tail
             val deferred = CoroutineScope(currentCoroutineContext()).async(Dispatchers.IO) {
-                val previousResult = previous?.await()
-                if (previousResult != null && previousResult.isFailure) {
-                    Result.failure(previousResult.exceptionOrNull() ?: IllegalStateException("上一段合成失败"))
-                } else {
-                    try {
-                        Result.success(
-                            synthesizeParagraph(
-                                engine,
-                                chunkText,
-                                playbackState.voice,
-                                playbackState.style,
-                                key.paragraphIndex,
-                                conservativeSynthesis,
-                                playbackState.conservativeRequestIntervalMs,
-                                playbackState.retryCount,
-                                playbackState.retryBaseDelayMs
-                            )
+                previous?.await()
+                try {
+                    Result.success(
+                        synthesizeParagraph(
+                            engine,
+                            chunkText,
+                            playbackState.voice,
+                            playbackState.style,
+                            key.paragraphIndex,
+                            conservativeSynthesis,
+                            playbackState.conservativeRequestIntervalMs,
+                            playbackState.retryCount,
+                            playbackState.retryBaseDelayMs
                         )
-                    } catch (error: CancellationException) {
-                        throw error
-                    } catch (error: Throwable) {
-                        Result.failure(error)
-                    }
+                    )
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    Result.failure(error)
                 }
             }
             audioCache[key] = deferred
@@ -409,6 +429,7 @@ class ReaderPlaybackService : Service() {
         val channelCount = AudioUtils.getWavChannelCount(wavData)
         val bitsPerSample = AudioUtils.getWavBitsPerSample(wavData)
         val pcmData = AudioUtils.extractPcmData(wavData)
+        if (pcmData.isEmpty()) throw IllegalArgumentException("音频数据为空")
         val channelConfig = if (channelCount == 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
         val encoding = if (bitsPerSample == 16) AudioFormat.ENCODING_PCM_16BIT else AudioFormat.ENCODING_PCM_8BIT
         val bytesPerFrame = channelCount * (bitsPerSample / 8).coerceAtLeast(1)
@@ -434,17 +455,24 @@ class ReaderPlaybackService : Service() {
 
         currentTrack = track
         try {
-            track.write(pcmData, 0, pcmData.size)
+            val written = track.write(pcmData, 0, pcmData.size)
+            if (written != pcmData.size) {
+                throw IllegalStateException("AudioTrack write incomplete: " + written + "/" + pcmData.size)
+            }
             val speed = state?.speed ?: 1.0f
             if (speed > 0f && kotlin.math.abs(speed - 1.0f) > 0.01f) {
                 runCatching { track.playbackParams = track.playbackParams.setSpeed(speed) }
             }
             track.play()
+            val playStartedAt = System.currentTimeMillis()
             while (currentCoroutineContext().isActive) {
-                val stillPlaying = runCatching {
-                    track.playState == AudioTrack.PLAYSTATE_PLAYING && track.playbackHeadPosition < frameCount
-                }.getOrDefault(false)
-                if (!stillPlaying) break
+                val playbackHead = runCatching { track.playbackHeadPosition }.getOrDefault(frameCount)
+                if (playbackHead >= frameCount) break
+                val playState = runCatching { track.playState }.getOrDefault(AudioTrack.PLAYSTATE_STOPPED)
+                val isStarting = playbackHead == 0 && System.currentTimeMillis() - playStartedAt < AUDIO_START_GRACE_MS
+                if (playState != AudioTrack.PLAYSTATE_PLAYING && !isPaused && !isStarting) {
+                    throw IllegalStateException("AudioTrack stopped before completion: state=" + playState + " head=" + playbackHead + "/" + frameCount)
+                }
                 if (isPaused) {
                     runCatching { track.pause() }
                     while (currentCoroutineContext().isActive && isPaused) Thread.sleep(100)
@@ -610,6 +638,7 @@ class ReaderPlaybackService : Service() {
 
         private const val TAG = "ReaderPlaybackService"
         private const val DEFAULT_CONSERVATIVE_REQUEST_INTERVAL_MS = 5000
+        private const val AUDIO_START_GRACE_MS = 1000L
         private const val DEFAULT_RETRY_COUNT = 3
         private const val DEFAULT_RETRY_BASE_DELAY_MS = 2000
         private const val MIN_TTS_CHUNK_CHARS = 40
