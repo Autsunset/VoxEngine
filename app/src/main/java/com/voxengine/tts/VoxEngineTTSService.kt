@@ -165,13 +165,33 @@ class VoxEngineTTSService : TextToSpeechService() {
         return TextToSpeech.LANG_AVAILABLE
     }
 
-    override fun onGetLanguage(): Array<String> {
-        return arrayOf("zho", "CHN", "")
+    override fun onGetLanguage(): Array<String> = languageArrayForVoice(currentVoice)
+
+    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int =
+        if (lang == "eng" || lang == "en" || lang == "jpn" || lang == "ja" ||
+            lang == "zho" || lang == "chi" || lang == "zh"
+        ) {
+            TextToSpeech.LANG_COUNTRY_AVAILABLE
+        } else {
+            TextToSpeech.LANG_AVAILABLE
+        }
+
+    private fun languageArrayForVoice(voice: String): Array<String> = when {
+        voice.isEnglishVoice() -> arrayOf("eng", "USA", "")
+        voice.isJapaneseVoice() -> arrayOf("jpn", "JPN", "")
+        else -> arrayOf("zho", "CHN", "")
     }
 
-    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
-        return TextToSpeech.LANG_AVAILABLE
-    }
+    private fun String.isEnglishVoice(): Boolean =
+        startsWith("en-", ignoreCase = true) ||
+            equals("Mia", ignoreCase = true) ||
+            equals("Chloe", ignoreCase = true) ||
+            equals("Milo", ignoreCase = true) ||
+            equals("Dean", ignoreCase = true)
+
+    private fun String.isJapaneseVoice(): Boolean =
+        startsWith("ja-", ignoreCase = true) ||
+            this in setOf("七海", "圭太", "葵", "大智", "诗织", "直树", "真由")
 
     companion object {
         private const val TAG = "VoxEngineTTS"

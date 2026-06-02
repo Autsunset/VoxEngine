@@ -141,6 +141,7 @@ class ReaderPlaybackService : Service() {
         val audioCache = mutableMapOf<ChunkKey, Deferred<Result<AudioChunk>>>()
         var prefetchTail: Deferred<Result<AudioChunk>>? = null
         var playbackFailed = false
+        val nextChapterPrefetchPagesByChapter = mutableMapOf<Int, Int>()
 
         while (currentCoroutineContext().isActive && position != null) {
             if (playbackState.stopAtMillis > 0 && System.currentTimeMillis() >= playbackState.stopAtMillis) break
@@ -157,11 +158,12 @@ class ReaderPlaybackService : Service() {
             updateNotification("${chapter.title} · 第${position.pageIndex + 1}页 合成中", true)
 
             val nextPosition = nextPosition(chapters, position)
+            val nextChapterPrefetchPageCount = nextChapterPrefetchPagesByChapter[position.chapterIndex] ?: 0
             prefetchTail = schedulePrefetchWindow(
                 chapters = chapters,
                 currentPosition = position,
                 startParagraphIndex = startParagraphIndex,
-                nextPosition = nextPosition,
+                nextChapterPrefetchPageCount = nextChapterPrefetchPageCount,
                 playbackState = playbackState,
                 engine = engine,
                 conservativeSynthesis = conservativeSynthesis,
@@ -243,6 +245,7 @@ class ReaderPlaybackService : Service() {
                 break
             }
             db.readerBookDao().updateProgress(playbackState.uri, position.chapterIndex, position.pageIndex, 0)
+            nextChapterPrefetchPagesByChapter[position.chapterIndex] = nextChapterPrefetchPageCount + 1
 
             if (nextPosition != null && nextPosition.chapterIndex != position.chapterIndex) {
                 finishedChapters += 1
@@ -263,26 +266,23 @@ class ReaderPlaybackService : Service() {
         chapters: List<TxtChapter>,
         currentPosition: PlaybackPosition,
         startParagraphIndex: Int,
-        nextPosition: PlaybackPosition?,
+        nextChapterPrefetchPageCount: Int,
         playbackState: PlaybackState,
         engine: TTSEngine,
         conservativeSynthesis: Boolean,
         audioCache: MutableMap<ChunkKey, Deferred<Result<AudioChunk>>>,
         prefetchTail: Deferred<Result<AudioChunk>>?
     ): Deferred<Result<AudioChunk>>? {
-        val window = buildList {
-            addAll(chunkKeysForPlayback(chapters, currentPosition, playbackState, startParagraphIndex))
-            if (nextPosition != null) {
-                addAll(chunkKeysForPlayback(chapters, nextPosition, playbackState, 0))
-            }
-        }
+        val window = buildPrefetchWindow(
+            chapters = chapters,
+            currentPosition = currentPosition,
+            startParagraphIndex = startParagraphIndex,
+            nextChapterPrefetchPageCount = nextChapterPrefetchPageCount,
+            playbackState = playbackState
+        )
         var tail = prefetchTail
         for ((key, chunkText) in window) {
-            val existing = audioCache[key]
-            if (existing != null) {
-                tail = existing
-                continue
-            }
+            if (audioCache.containsKey(key)) continue
             val previous = tail
             val deferred = CoroutineScope(currentCoroutineContext()).async(Dispatchers.IO) {
                 previous?.await()
@@ -310,6 +310,42 @@ class ReaderPlaybackService : Service() {
             tail = deferred
         }
         return tail
+    }
+
+    private fun buildPrefetchWindow(
+        chapters: List<TxtChapter>,
+        currentPosition: PlaybackPosition,
+        startParagraphIndex: Int,
+        nextChapterPrefetchPageCount: Int,
+        playbackState: PlaybackState
+    ): List<Pair<ChunkKey, String>> = buildList {
+        val currentChapterPages = pagesForPlayback(chapters, currentPosition.chapterIndex, playbackState)
+        for (pageIndex in currentPosition.pageIndex until currentChapterPages.size) {
+            addAll(
+                chunkKeysForPlayback(
+                    chapters = chapters,
+                    position = PlaybackPosition(currentPosition.chapterIndex, pageIndex),
+                    playbackState = playbackState,
+                    startParagraphIndex = if (pageIndex == currentPosition.pageIndex) startParagraphIndex else 0
+                )
+            )
+        }
+
+        val nextChapterPosition = normalizePosition(chapters, PlaybackPosition(currentPosition.chapterIndex + 1, 0))
+        if (nextChapterPosition != null && nextChapterPosition.chapterIndex != currentPosition.chapterIndex) {
+            val nextChapterPages = pagesForPlayback(chapters, nextChapterPosition.chapterIndex, playbackState)
+            val pageCount = nextChapterPrefetchPageCount.coerceIn(0, nextChapterPages.size)
+            for (pageIndex in 0 until pageCount) {
+                addAll(
+                    chunkKeysForPlayback(
+                        chapters = chapters,
+                        position = PlaybackPosition(nextChapterPosition.chapterIndex, pageIndex),
+                        playbackState = playbackState,
+                        startParagraphIndex = 0
+                    )
+                )
+            }
+        }
     }
 
     private fun chunkKeysForPlayback(

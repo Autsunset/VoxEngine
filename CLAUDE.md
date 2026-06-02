@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-VoxEngine is an Android TTS (Text-to-Speech) engine app with a pluggable engine architecture. It registers as a **system-level TTS service** via Android's `TextToSpeechService`, allowing other apps (e.g., Legado reading app) to use it directly for speech synthesis. The primary engine is MiMo (小米 MiMo TTS), with stubs for OpenAI and Edge TTS.
+VoxEngine is an Android TTS (Text-to-Speech) engine app with a pluggable engine architecture. It registers as a **system-level TTS service** via Android's `TextToSpeechService`, allowing other apps (e.g., Legado reading app) to use it directly for speech synthesis. The primary engine is MiMo (小米 MiMo TTS), with a free Microsoft Edge TTS engine also available.
 
 ## Build & Run
 
@@ -30,10 +30,9 @@ No test suite exists in this project. No linting configuration beyond Android de
 
 The core abstraction is `TTSEngine` (`engine/TTSEngine.kt`) — all TTS providers implement this interface. `EngineRegistry` (`engine/EngineRegistry.kt`) is a singleton map of `id -> TTSEngine`.
 
-Engines are registered at app startup in `VoxEngineApplication.registerEngines()`. Currently three engines exist:
+Engines are registered at app startup in `VoxEngineApplication.registerEngines()`. Currently two engines exist:
 - **MiMoEngine** (`engine/mimo/`) — fully implemented, supports voice clone and voice design
-- **OpenAIEngine** (`engine/openai/`) — stub, all methods throw `NotImplementedError`
-- **EdgeTTSEngine** (`engine/edge/`) — stub, all methods throw `NotImplementedError`
+- **EdgeTTSEngine** (`engine/edge/`) — implemented, free Microsoft Edge TTS; `isConfigured()` always returns true, but voice clone/design are unsupported (`cloneVoice`/`designVoice` throw `NotImplementedError`)
 
 ### MiMo API Integration
 

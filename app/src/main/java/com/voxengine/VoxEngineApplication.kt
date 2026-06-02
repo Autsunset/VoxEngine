@@ -5,7 +5,6 @@ import com.voxengine.data.SettingsRepository
 import com.voxengine.engine.EngineRegistry
 import com.voxengine.engine.edge.EdgeTTSEngine
 import com.voxengine.engine.mimo.MiMoEngine
-import com.voxengine.engine.openai.OpenAIEngine
 import com.voxengine.util.LogManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,7 +26,6 @@ class VoxEngineApplication : Application() {
         val settings = SettingsRepository(this)
         val mimoEngine = MiMoEngine(settings)
         EngineRegistry.register(mimoEngine)
-        EngineRegistry.register(OpenAIEngine(settings))
         EngineRegistry.register(EdgeTTSEngine(settings))
     }
 
