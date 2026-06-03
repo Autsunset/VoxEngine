@@ -13,8 +13,8 @@ android {
         applicationId = "com.voxengine"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2606031
-        versionName = "2026.06.03.1"
+        versionCode = 2606032
+        versionName = "2026.06.03.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -22,15 +22,16 @@ android {
     signingConfigs {
         create("release") {
             storeFile = file("../voxengine.jks")
-            storePassword = System.getenv("RELEASE_STORE_PASSWORD") ?: "voxengine123"
+            storePassword = System.getenv("RELEASE_STORE_PASSWORD")
             keyAlias = System.getenv("RELEASE_KEY_ALIAS") ?: "voxengine"
-            keyPassword = System.getenv("RELEASE_KEY_PASSWORD") ?: "voxengine123"
+            keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
         }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -79,4 +80,5 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.coil.compose)
     debugImplementation(libs.androidx.ui.tooling)
+    testImplementation(libs.junit)
 }

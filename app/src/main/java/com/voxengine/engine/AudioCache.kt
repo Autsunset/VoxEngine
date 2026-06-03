@@ -5,12 +5,12 @@ import java.security.MessageDigest
 
 /**
  * 音频缓存管理器
- * 对相同文本+音色+风格+语速的合成结果缓存，避免重复 API 调用
+ * 对相同引擎+文本+音色+风格的原始合成结果缓存，避免重复 API 调用
  */
 object AudioCache {
     private const val MAX_CACHE_BYTES = 32 * 1024 * 1024 // 32MB，按字节封顶避免大 WAV 撑爆内存
     private const val CACHE_TTL_MS = 5 * 60 * 1000L // 5 分钟
-    private const val CACHE_VERSION = "reader-tts-v3"
+    private const val CACHE_VERSION = "reader-tts-v4"
 
     private data class CacheEntry(
         val audioData: ByteArray,
@@ -24,8 +24,14 @@ object AudioCache {
     /**
      * 生成缓存键
      */
-    fun generateKey(text: String, voice: String, style: String?): String {
-        val raw = "$CACHE_VERSION|$text|$voice|${style ?: ""}"
+    fun generateKey(
+        text: String,
+        voice: String,
+        style: String?,
+        engineId: String,
+        voiceFingerprint: String = voice
+    ): String {
+        val raw = "$CACHE_VERSION|$engineId|$voiceFingerprint|$text|${style ?: ""}"
         return md5(raw)
     }
 

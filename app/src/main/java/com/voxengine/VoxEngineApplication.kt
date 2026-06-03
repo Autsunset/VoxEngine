@@ -6,15 +6,8 @@ import com.voxengine.engine.EngineRegistry
 import com.voxengine.engine.edge.EdgeTTSEngine
 import com.voxengine.engine.mimo.MiMoEngine
 import com.voxengine.util.LogManager
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 
 class VoxEngineApplication : Application() {
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
     override fun onCreate() {
         super.onCreate()
         instance = this

@@ -12,10 +12,12 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.room.withTransaction
 import com.voxengine.MainActivity
 import com.voxengine.R
 import com.voxengine.audio.AudioUtils
 import com.voxengine.data.AppDatabase
+import com.voxengine.data.ReaderChapterEntity
 import com.voxengine.engine.EngineRegistry
 import com.voxengine.engine.TTSEngine
 import com.voxengine.util.LogManager
@@ -124,9 +126,26 @@ class ReaderPlaybackService : Service() {
         }
         val db = AppDatabase.getDatabase(this)
         val chapters = withContext(Dispatchers.IO) {
-            val bytes = contentResolver.openInputStream(Uri.parse(playbackState.uri))?.use { it.readBytes() }
-                ?: throw FileNotFoundException(playbackState.uri)
-            TxtNovelParser.parse(TxtNovelParser.decode(bytes))
+            ReaderChapterCache.getChapters(playbackState.uri)
+                ?: db.readerChapterDao().getChapters(playbackState.uri)
+                    .map { it.toTxtChapter() }
+                    .takeIf { it.isNotEmpty() }
+                    ?.also { ReaderChapterCache.putChapters(playbackState.uri, it) }
+                ?: run {
+                    val bytes = contentResolver.openInputStream(Uri.parse(playbackState.uri))?.use { it.readBytes() }
+                        ?: throw FileNotFoundException(playbackState.uri)
+                    TxtNovelParser.parse(TxtNovelParser.decode(bytes)).also { parsedChapters ->
+                        ReaderChapterCache.putChapters(playbackState.uri, parsedChapters)
+                        db.withTransaction {
+                            db.readerChapterDao().deleteByBookUri(playbackState.uri)
+                            db.readerChapterDao().insertAll(
+                                parsedChapters.mapIndexed { index, chapter ->
+                                    ReaderChapterEntity.fromTxtChapter(playbackState.uri, index, chapter)
+                                }
+                            )
+                        }
+                    }
+                }
         }
         if (chapters.isEmpty()) {
             updateNotification("没有可播放章节", false)

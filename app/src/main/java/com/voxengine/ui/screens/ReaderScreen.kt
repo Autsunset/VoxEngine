@@ -100,10 +100,13 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.room.withTransaction
 import com.voxengine.data.AppDatabase
 import com.voxengine.data.ReaderBookEntity
+import com.voxengine.data.ReaderChapterEntity
 import com.voxengine.data.SettingsRepository
 import com.voxengine.engine.EngineRegistry
+import com.voxengine.reader.ReaderChapterCache
 import com.voxengine.reader.ReaderMeasuredPageCache
 import com.voxengine.reader.ReaderPlaybackService
 import com.voxengine.reader.TxtChapter
@@ -356,7 +359,14 @@ fun ReaderScreen(
                     context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
                 val book = ReaderBookEntity(uri = uri.toString(), title = title)
-                withContext(Dispatchers.IO) { db.readerBookDao().upsert(book) }
+                withContext(Dispatchers.IO) {
+                    db.withTransaction {
+                        db.readerChapterDao().deleteByBookUri(book.uri)
+                        db.readerBookDao().upsert(book)
+                    }
+                    ReaderChapterCache.clearBook(book.uri)
+                    ReaderMeasuredPageCache.clearBook(book.uri)
+                }
                 if (firstBook == null) firstBook = book
             }
             firstBook?.let { if (currentBook == null) openBook(it) }
@@ -385,9 +395,26 @@ fun ReaderScreen(
         statusText = "正在解析 ${book.title}"
         val parsed = withContext(Dispatchers.IO) {
             runCatching {
-                val bytes = context.contentResolver.openInputStream(Uri.parse(book.uri))?.use { it.readBytes() }
-                    ?: throw FileNotFoundException(book.uri)
-                TxtNovelParser.parse(TxtNovelParser.decode(bytes))
+                ReaderChapterCache.getChapters(book.uri)
+                    ?: db.readerChapterDao().getChapters(book.uri)
+                        .map { it.toTxtChapter() }
+                        .takeIf { it.isNotEmpty() }
+                        ?.also { ReaderChapterCache.putChapters(book.uri, it) }
+                    ?: run {
+                        val bytes = context.contentResolver.openInputStream(Uri.parse(book.uri))?.use { it.readBytes() }
+                            ?: throw FileNotFoundException(book.uri)
+                        TxtNovelParser.parse(TxtNovelParser.decode(bytes)).also { parsedChapters ->
+                            ReaderChapterCache.putChapters(book.uri, parsedChapters)
+                            db.withTransaction {
+                                db.readerChapterDao().deleteByBookUri(book.uri)
+                                db.readerChapterDao().insertAll(
+                                    parsedChapters.mapIndexed { index, chapter ->
+                                        ReaderChapterEntity.fromTxtChapter(book.uri, index, chapter)
+                                    }
+                                )
+                            }
+                        }
+                    }
             }
         }
         parsed.onSuccess { list ->
@@ -426,7 +453,16 @@ fun ReaderScreen(
                 books = books,
                 onImport = { openDocumentLauncher.launch(arrayOf("text/plain", "text/*")) },
                 onOpen = ::openBook,
-                onDelete = { item -> scope.launch(Dispatchers.IO) { db.readerBookDao().deleteByUri(item.uri) } },
+                onDelete = { item ->
+                    scope.launch(Dispatchers.IO) {
+                        db.withTransaction {
+                            db.readerChapterDao().deleteByBookUri(item.uri)
+                            db.readerBookDao().deleteByUri(item.uri)
+                        }
+                        ReaderChapterCache.clearBook(item.uri)
+                        ReaderMeasuredPageCache.clearBook(item.uri)
+                    }
+                },
                 modifier = Modifier.padding(padding)
             )
         }

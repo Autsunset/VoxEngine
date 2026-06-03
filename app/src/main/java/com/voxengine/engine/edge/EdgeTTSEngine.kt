@@ -31,7 +31,14 @@ class EdgeTTSEngine(
         optimizeTextPreview: Boolean
     ): SynthesisResult = withContext(Dispatchers.IO) {
         val speechText = SpeechTextNormalizer.normalize(text)
-        val cacheKey = AudioCache.generateKey(speechText, voice, style)
+        val resolvedVoice = resolveVoiceId(voice)
+        val cacheKey = AudioCache.generateKey(
+            text = speechText,
+            voice = voice,
+            style = style,
+            engineId = id,
+            voiceFingerprint = resolvedVoice
+        )
         AudioCache.get(cacheKey)?.let { cached ->
             return@withContext SynthesisResult(
                 audioData = cached,
@@ -42,7 +49,6 @@ class EdgeTTSEngine(
         }
 
         val startTime = System.currentTimeMillis()
-        val resolvedVoice = resolveVoiceId(voice)
         val wav = client.synthesize(speechText, resolvedVoice)
         AudioCache.put(cacheKey, wav)
         SynthesisResult(

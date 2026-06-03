@@ -14,6 +14,7 @@ import com.voxengine.util.LogManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -21,13 +22,15 @@ import kotlinx.coroutines.runBlocking
 class VoxEngineTTSService : TextToSpeechService() {
 
     private var settings: SettingsRepository? = null
+    private var currentEngine = "mimo"
     private var currentVoice = "冰糖"
     private var currentStyle = "无"
     private var currentSpeed = 1.0f
     private var parallelSynthesis = false
     private var ttsConcurrency = 3
     @Volatile private var stopRequested = false
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val serviceJob = SupervisorJob()
+    private val serviceScope = CoroutineScope(serviceJob + Dispatchers.IO)
 
     override fun onCreate() {
         super.onCreate()
@@ -35,18 +38,21 @@ class VoxEngineTTSService : TextToSpeechService() {
             settings = SettingsRepository(applicationContext)
             val s = settings!!
 
-            val engineId = runBlocking { s.currentEngine.first() }
-            currentVoice = runBlocking { s.defaultVoice.first() }
-            currentStyle = runBlocking { s.defaultStyle.first() }
-            currentSpeed = runBlocking { s.speed.first() }
-            parallelSynthesis = runBlocking { s.parallelSynthesis.first() }
-            ttsConcurrency = runBlocking { s.ttsConcurrency.first() }
+            runBlocking {
+                currentEngine = s.currentEngine.first()
+                currentVoice = s.defaultVoice.first()
+                currentStyle = s.defaultStyle.first()
+                currentSpeed = s.speed.first()
+                parallelSynthesis = s.parallelSynthesis.first()
+                ttsConcurrency = s.ttsConcurrency.first()
+            }
 
-            if (!EngineRegistry.isRegistered(engineId)) {
+            if (!EngineRegistry.isRegistered(currentEngine)) {
                 val engine = MiMoEngine(s)
                 EngineRegistry.register(engine)
             }
 
+            serviceScope.launch { s.currentEngine.collect { currentEngine = it } }
             serviceScope.launch { s.defaultVoice.collect { currentVoice = it } }
             serviceScope.launch { s.defaultStyle.collect { currentStyle = it } }
             serviceScope.launch { s.speed.collect { currentSpeed = it } }
@@ -80,8 +86,7 @@ class VoxEngineTTSService : TextToSpeechService() {
         try {
             Log.d(TAG, "Synthesizing: ${text.take(50)}...")
             LogManager.appendLog("D", TAG, "Synthesizing: ${text.take(50)}...")
-            val engineId = runBlocking { s.currentEngine.first() }
-            val engine = EngineRegistry.getActive(engineId)
+            val engine = EngineRegistry.getActive(currentEngine)
 
             Log.d(TAG, "Voice=$currentVoice, Style=$currentStyle, Parallel=$parallelSynthesis, Concurrency=$ttsConcurrency, Speed=$effectiveSpeed")
             LogManager.appendLog("D", TAG, "Voice=$currentVoice, Style=$currentStyle, Parallel=$parallelSynthesis, Concurrency=$ttsConcurrency, Speed=$effectiveSpeed")
@@ -159,6 +164,11 @@ class VoxEngineTTSService : TextToSpeechService() {
 
     override fun onStop() {
         stopRequested = true
+    }
+
+    override fun onDestroy() {
+        serviceJob.cancel()
+        super.onDestroy()
     }
 
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {

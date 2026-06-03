@@ -17,3 +17,25 @@ object ReaderMeasuredPageCache {
         pagesByBook.remove(uri)
     }
 }
+
+object ReaderChapterCache {
+    private const val MAX_BOOKS = 3
+    private val chaptersByBook = object : LinkedHashMap<String, List<TxtChapter>>(MAX_BOOKS, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<TxtChapter>>?): Boolean =
+            size > MAX_BOOKS
+    }
+
+    @Synchronized
+    fun putChapters(uri: String, chapters: List<TxtChapter>) {
+        if (uri.isBlank() || chapters.isEmpty()) return
+        chaptersByBook[uri] = chapters
+    }
+
+    @Synchronized
+    fun getChapters(uri: String): List<TxtChapter>? = chaptersByBook[uri]
+
+    @Synchronized
+    fun clearBook(uri: String) {
+        chaptersByBook.remove(uri)
+    }
+}

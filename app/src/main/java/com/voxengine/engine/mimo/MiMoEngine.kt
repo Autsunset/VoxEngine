@@ -154,9 +154,19 @@ class MiMoEngine(
         style: String?,
         optimizeTextPreview: Boolean
     ): SynthesisResult {
-        // 检查缓存（仅非 optimizeTextPreview 模式缓存）
         val speechText = SpeechTextNormalizer.normalize(text)
-        val cacheKey = AudioCache.generateKey(speechText, voice, style)
+        val db = AppDatabase.getDatabase(com.voxengine.VoxEngineApplication.instance)
+        val customVoice = db.voiceDao().getVoiceByName(voice)
+        val voiceFingerprint = customVoice?.let { custom ->
+            "${custom.engineId}:${custom.type}:${custom.model}:${custom.voiceParam.hashCode()}:${custom.createdAt}"
+        } ?: "preset:$voice"
+        val cacheKey = AudioCache.generateKey(
+            text = speechText,
+            voice = voice,
+            style = style,
+            engineId = id,
+            voiceFingerprint = voiceFingerprint
+        )
         if (!optimizeTextPreview) {
             val cachedAudio = AudioCache.get(cacheKey)
             if (cachedAudio != null) {
@@ -171,10 +181,6 @@ class MiMoEngine(
         }
 
         val c = getClient()
-
-        // 检查是否是自定义音色（clone 或 design）
-        val db = AppDatabase.getDatabase(com.voxengine.VoxEngineApplication.instance)
-        val customVoice = db.voiceDao().getVoiceByName(voice)
 
         val mimoResult = if (customVoice != null) {
             when (customVoice.type) {
