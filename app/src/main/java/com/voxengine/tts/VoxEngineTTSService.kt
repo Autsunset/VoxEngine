@@ -8,6 +8,7 @@ import android.util.Log
 import com.voxengine.audio.AudioUtils
 import com.voxengine.audio.SpeedAdjuster
 import com.voxengine.data.SettingsRepository
+import com.voxengine.engine.EngineBootstrap
 import com.voxengine.engine.EngineRegistry
 import com.voxengine.engine.mimo.MiMoEngine
 import com.voxengine.util.LogManager
@@ -47,10 +48,7 @@ class VoxEngineTTSService : TextToSpeechService() {
                 ttsConcurrency = s.ttsConcurrency.first()
             }
 
-            if (!EngineRegistry.isRegistered(currentEngine)) {
-                val engine = MiMoEngine(s)
-                EngineRegistry.register(engine)
-            }
+            EngineBootstrap.ensureRegistered(s)
 
             serviceScope.launch { s.currentEngine.collect { currentEngine = it } }
             serviceScope.launch { s.defaultVoice.collect { currentVoice = it } }
@@ -107,7 +105,7 @@ class VoxEngineTTSService : TextToSpeechService() {
                 runBlocking {
                     engine.synthesizeStreaming(text, currentVoice, style, ttsConcurrency) { pcm ->
                         ensureStarted()
-                        writePcm(callback, applySpeed(pcm, 24000, effectiveSpeed))
+                        writePcmOrThrow(callback, applySpeed(pcm, 24000, effectiveSpeed))
                     }
                 }
             } else {
@@ -119,15 +117,18 @@ class VoxEngineTTSService : TextToSpeechService() {
                 if (!started) {
                     val r = callback.start(sampleRate, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
                     if (r == TextToSpeech.ERROR) {
-                        Log.e(TAG, "callback.start returned error, aborting")
-                        return
+                        throw IllegalStateException("callback.start returned error")
                     }
                     started = true
                 }
-                writePcm(callback, applySpeed(pcmData, sampleRate, effectiveSpeed))
+                writePcmOrThrow(callback, applySpeed(pcmData, sampleRate, effectiveSpeed))
             }
 
+            if (stopRequested) throw SynthesisStoppedException()
             callback.done()
+        } catch (e: SynthesisStoppedException) {
+            Log.d(TAG, "Synthesis stopped")
+            LogManager.appendLog("D", TAG, "Synthesis stopped")
         } catch (e: Exception) {
             Log.e(TAG, "Synthesis failed", e)
             LogManager.appendLog("E", TAG, "Synthesis failed: ${e.message}")
@@ -137,6 +138,12 @@ class VoxEngineTTSService : TextToSpeechService() {
 
     private fun applySpeed(pcm: ByteArray, sampleRate: Int, speed: Float): ByteArray =
         SpeedAdjuster.process(pcm, sampleRate, 1, speed)
+
+    private fun writePcmOrThrow(callback: SynthesisCallback, pcmData: ByteArray) {
+        if (writePcm(callback, pcmData)) return
+        if (stopRequested) throw SynthesisStoppedException()
+        throw IllegalStateException("audioAvailable failed repeatedly")
+    }
 
     /** 把 PCM 分块写入回调。返回 false 表示应中止（被停止或写错误过多）。 */
     private fun writePcm(callback: SynthesisCallback, pcmData: ByteArray): Boolean {
@@ -202,6 +209,8 @@ class VoxEngineTTSService : TextToSpeechService() {
     private fun String.isJapaneseVoice(): Boolean =
         startsWith("ja-", ignoreCase = true) ||
             this in setOf("七海", "圭太", "葵", "大智", "诗织", "直树", "真由")
+
+    private class SynthesisStoppedException : RuntimeException()
 
     companion object {
         private const val TAG = "VoxEngineTTS"

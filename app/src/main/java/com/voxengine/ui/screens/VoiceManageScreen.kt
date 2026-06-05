@@ -120,7 +120,7 @@ fun VoiceManageScreen() {
                     val voices: List<VoiceEntity> = Gson().fromJson(json, type)
                     var count = 0
                     for (voice in voices) {
-                        val existing = db.voiceDao().getVoiceByName(voice.name)
+                        val existing = db.voiceDao().getVoiceByEngineAndName(voice.engineId, voice.name)
                         if (existing == null) {
                             db.voiceDao().insert(voice.copy(id = 0))
                             count++

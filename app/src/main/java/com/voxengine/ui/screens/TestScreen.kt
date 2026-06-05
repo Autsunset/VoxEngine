@@ -101,7 +101,7 @@ fun TestScreen() {
     // 播放协程 Job
     var playJob by remember { mutableStateOf<Job?>(null) }
 
-    val isConfigured = apiKey.isNotBlank()
+    val isConfigured = activeEngine?.isConfigured() ?: false
 
     // 离开页面时停止播放
     DisposableEffect(Unit) {
@@ -155,13 +155,13 @@ fun TestScreen() {
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(
-                        "⚠️ API Key 未配置",
+                        "⚠️ 当前引擎未配置",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onErrorContainer
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "请先在设置页面配置 API Key，否则无法合成语音。",
+                        "请先在设置页面完成当前引擎配置，否则无法合成语音。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onErrorContainer
                     )

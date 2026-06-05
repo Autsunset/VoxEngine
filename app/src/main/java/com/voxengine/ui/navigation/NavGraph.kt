@@ -1,5 +1,6 @@
 package com.voxengine.ui.navigation
 
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
@@ -48,6 +49,7 @@ fun MainNavGraph() {
     var readerImmersive by remember { mutableStateOf(false) }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             if (!readerImmersive) {
                 val navBackStackEntry by navController.currentBackStackEntryAsState()

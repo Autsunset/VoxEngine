@@ -36,6 +36,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
 
+data class PlaybackSnapshot(
+    val uri: String,
+    val chapterIndex: Int,
+    val pageIndex: Int,
+    val paragraphIndex: Int,
+    val isListening: Boolean,
+    val isPaused: Boolean
+)
+
 class ReaderPlaybackService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var playbackJob: Job? = null
@@ -97,6 +106,7 @@ class ReaderPlaybackService : Service() {
         isPaused = false
         startForeground(NOTIFICATION_ID, buildNotification("准备播放", isPlaying = true))
         playbackJob = serviceScope.launch { runPlayback() }
+        publishPlaybackState(true)
     }
 
     private suspend fun runPlayback() {
@@ -109,6 +119,7 @@ class ReaderPlaybackService : Service() {
             updateNotification("听书失败: ${e.message ?: "未知错误"}", false)
             state = null
             isPaused = false
+            publishPlaybackState(false)
             stopForeground(STOP_FOREGROUND_DETACH)
             stopSelf()
         }
@@ -274,6 +285,7 @@ class ReaderPlaybackService : Service() {
 
         if (!playbackFailed) {
             updateNotification("听书已结束", false)
+            publishPlaybackState(false)
         }
         state = null
         isPaused = false
@@ -564,6 +576,7 @@ class ReaderPlaybackService : Service() {
         currentTrack?.releaseSafely()
         isPaused = false
         playbackJob = serviceScope.launch { runPlayback() }
+        publishPlaybackState(true)
     }
 
     private fun stopPlayback(releaseService: Boolean = true) {
@@ -590,6 +603,33 @@ class ReaderPlaybackService : Service() {
                 .putExtra(EXTRA_CHAPTER_INDEX, chapterIndex)
                 .putExtra(EXTRA_PAGE_INDEX, pageIndex)
                 .putExtra(EXTRA_PARAGRAPH_INDEX, paragraphIndex)
+        )
+    }
+
+    private fun publishPlaybackState(isListening: Boolean) {
+        val playbackState = state ?: return
+        val snapshot = PlaybackSnapshot(
+            uri = playbackState.uri,
+            chapterIndex = playbackState.chapterIndex,
+            pageIndex = playbackState.pageIndex,
+            paragraphIndex = playbackState.paragraphIndex,
+            isListening = isListening,
+            isPaused = isListening && isPaused
+        )
+        if (isListening) {
+            playbackSnapshotRef.set(snapshot)
+        } else {
+            playbackSnapshotRef.set(null)
+        }
+        sendBroadcast(
+            Intent(ACTION_PLAYBACK_STATE)
+                .setPackage(packageName)
+                .putExtra(EXTRA_URI, snapshot.uri)
+                .putExtra(EXTRA_CHAPTER_INDEX, snapshot.chapterIndex)
+                .putExtra(EXTRA_PAGE_INDEX, snapshot.pageIndex)
+                .putExtra(EXTRA_PARAGRAPH_INDEX, snapshot.paragraphIndex)
+                .putExtra(EXTRA_IS_LISTENING, snapshot.isListening)
+                .putExtra(EXTRA_IS_PAUSED, snapshot.isPaused)
         )
     }
 
@@ -674,6 +714,15 @@ class ReaderPlaybackService : Service() {
         const val ACTION_PREVIOUS_CHAPTER = "com.voxengine.reader.PREVIOUS_CHAPTER"
         const val ACTION_NEXT_CHAPTER = "com.voxengine.reader.NEXT_CHAPTER"
         const val ACTION_PROGRESS = "com.voxengine.reader.PROGRESS"
+
+        const val ACTION_PLAYBACK_STATE = "com.voxengine.reader.PLAYBACK_STATE"
+        const val EXTRA_IS_LISTENING = "is_listening"
+        const val EXTRA_IS_PAUSED = "is_paused"
+
+        private val playbackSnapshotRef = java.util.concurrent.atomic.AtomicReference<PlaybackSnapshot?>(null)
+
+        fun getPlaybackSnapshot(uri: String? = null): PlaybackSnapshot? =
+            playbackSnapshotRef.get()?.takeIf { uri == null || it.uri == uri }
 
         const val EXTRA_URI = "uri"
         const val EXTRA_TITLE = "title"

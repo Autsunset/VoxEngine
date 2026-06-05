@@ -99,6 +99,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.core.content.ContextCompat
 import androidx.room.withTransaction
 import com.voxengine.data.AppDatabase
@@ -109,6 +112,7 @@ import com.voxengine.engine.EngineRegistry
 import com.voxengine.reader.ReaderChapterCache
 import com.voxengine.reader.ReaderMeasuredPageCache
 import com.voxengine.reader.ReaderPlaybackService
+import com.voxengine.reader.PlaybackSnapshot
 import com.voxengine.reader.TxtChapter
 import com.voxengine.reader.TxtNovelParser
 import com.voxengine.reader.TxtPage
@@ -128,6 +132,7 @@ fun ReaderScreen(
     onReadingModeChanged: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val db = remember { AppDatabase.getDatabase(context) }
@@ -220,6 +225,28 @@ fun ReaderScreen(
         saveProgress()
     }
 
+    fun syncPlaybackSnapshot(snapshot: PlaybackSnapshot?) {
+        val book = currentBook ?: return
+        if (snapshot == null || snapshot.uri != book.uri || !snapshot.isListening) {
+            isListening = false
+            isPaused = false
+            return
+        }
+
+        isListening = true
+        isPaused = snapshot.isPaused
+        statusText = if (snapshot.isPaused) "听书已暂停" else "听书播放中"
+        if (snapshot.chapterIndex in chapters.indices &&
+            (snapshot.chapterIndex != chapterIndex || snapshot.pageIndex != pageIndex)
+        ) {
+            setPosition(
+                snapshot.chapterIndex,
+                snapshot.pageIndex,
+                forward = snapshot.chapterIndex > chapterIndex || snapshot.pageIndex > pageIndex
+            )
+        }
+    }
+
     fun refreshCurrentPages(resetPage: Boolean) {
         val nextPages = pagesFor(chapterIndex)
         pages = nextPages
@@ -247,6 +274,11 @@ fun ReaderScreen(
 
     fun startListening(paragraphIndex: Int = 0) {
         val book = currentBook ?: return
+        val activeSnapshot = ReaderPlaybackService.getPlaybackSnapshot(book.uri)
+        if (activeSnapshot?.isListening == true) {
+            syncPlaybackSnapshot(activeSnapshot)
+            return
+        }
         if (pages.isNotEmpty()) {
             ReaderMeasuredPageCache.putChapterPages(book.uri, chapterIndex, pages)
         }
@@ -373,6 +405,20 @@ fun ReaderScreen(
         }
     }
 
+    LaunchedEffect(currentBook?.uri, chapters.size) {
+        syncPlaybackSnapshot(ReaderPlaybackService.getPlaybackSnapshot(currentBook?.uri))
+    }
+
+    DisposableEffect(lifecycleOwner, currentBook?.uri, chapters.size) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                syncPlaybackSnapshot(ReaderPlaybackService.getPlaybackSnapshot(currentBook?.uri))
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     LaunchedEffect(defaultVoice, defaultStyle) {
         if (defaultVoice.isNotBlank()) selectedVoiceId = defaultVoice
         selectedStyle = defaultStyle.takeIf { it != "无" }.orEmpty()
@@ -472,18 +518,31 @@ fun ReaderScreen(
     DisposableEffect(book.uri, chapters, chapterIndex, pageIndex) {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                if (intent.getStringExtra(ReaderPlaybackService.EXTRA_URI) != book.uri) return
-                val nextChapter = intent.getIntExtra(ReaderPlaybackService.EXTRA_CHAPTER_INDEX, chapterIndex)
-                val nextPage = intent.getIntExtra(ReaderPlaybackService.EXTRA_PAGE_INDEX, pageIndex)
-                if (nextChapter in chapters.indices && (nextChapter != chapterIndex || nextPage != pageIndex)) {
-                    setPosition(nextChapter, nextPage, forward = nextChapter > chapterIndex || nextPage > pageIndex)
-                }
+                val uri = intent.getStringExtra(ReaderPlaybackService.EXTRA_URI) ?: return
+                if (uri != book.uri) return
+                syncPlaybackSnapshot(
+                    PlaybackSnapshot(
+                        uri = uri,
+                        chapterIndex = intent.getIntExtra(ReaderPlaybackService.EXTRA_CHAPTER_INDEX, chapterIndex),
+                        pageIndex = intent.getIntExtra(ReaderPlaybackService.EXTRA_PAGE_INDEX, pageIndex),
+                        paragraphIndex = intent.getIntExtra(ReaderPlaybackService.EXTRA_PARAGRAPH_INDEX, 0),
+                        isListening = intent.getBooleanExtra(
+                            ReaderPlaybackService.EXTRA_IS_LISTENING,
+                            intent.action == ReaderPlaybackService.ACTION_PROGRESS
+                        ),
+                        isPaused = intent.getBooleanExtra(ReaderPlaybackService.EXTRA_IS_PAUSED, false)
+                    )
+                )
             }
+        }
+        val filter = IntentFilter().apply {
+            addAction(ReaderPlaybackService.ACTION_PROGRESS)
+            addAction(ReaderPlaybackService.ACTION_PLAYBACK_STATE)
         }
         ContextCompat.registerReceiver(
             context,
             receiver,
-            IntentFilter(ReaderPlaybackService.ACTION_PROGRESS),
+            filter,
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
         onDispose { context.unregisterReceiver(receiver) }

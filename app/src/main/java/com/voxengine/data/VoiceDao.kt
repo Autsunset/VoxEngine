@@ -30,6 +30,9 @@ interface VoiceDao {
     @Query("SELECT * FROM voices WHERE name = :name LIMIT 1")
     suspend fun getVoiceByName(name: String): VoiceEntity?
 
+    @Query("SELECT * FROM voices WHERE engineId = :engineId AND name = :name LIMIT 1")
+    suspend fun getVoiceByEngineAndName(engineId: String, name: String): VoiceEntity?
+
     @Insert
     suspend fun insert(voice: VoiceEntity): Long
 

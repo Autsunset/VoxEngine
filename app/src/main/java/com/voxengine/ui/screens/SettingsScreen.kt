@@ -1,8 +1,5 @@
 package com.voxengine.ui.screens
 
-import android.app.Activity
-import android.content.Context
-import android.content.ContextWrapper
 import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
@@ -54,7 +51,11 @@ import androidx.appcompat.app.AppCompatDelegate
 import com.voxengine.data.AppDatabase
 import com.voxengine.data.SettingsRepository
 import com.voxengine.engine.EngineRegistry
+import com.voxengine.engine.TTSEngine
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 // MiMo API 预设 URL
 private val MIMO_API_PRESETS = listOf(
@@ -160,7 +161,6 @@ fun SettingsScreen() {
                             AppCompatDelegate.setDefaultNightMode(
                                 if (enabled) AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO
                             )
-                            context.findActivity()?.recreate()
                         }
                     }
                 )
@@ -238,7 +238,9 @@ fun SettingsScreen() {
                                     }
                                 },
                                 onClick = {
-                                    scope.launch { settings.updateCurrentEngine(engine.id) }
+                                    scope.launch {
+                                        switchEngine(settings, db, engine, defaultVoice, defaultStyle)
+                                    }
                                     engineExpanded = false
                                 }
                             )
@@ -254,8 +256,14 @@ fun SettingsScreen() {
                 Text("API 配置", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
 
-                // MiMo 预设计费模式选择
-                if (currentEngineId == "mimo") {
+                if (currentEngineId != "mimo") {
+                    Text(
+                        "Edge TTS 无需 API Key 或 Base URL 配置。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    // MiMo 预设计费模式选择
                     Text("计费模式", style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.height(4.dp))
                     ExposedDropdownMenuBox(
@@ -293,7 +301,6 @@ fun SettingsScreen() {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(8.dp))
-                }
 
                 OutlinedTextField(
                     value = baseUrlInput,
@@ -339,9 +346,11 @@ fun SettingsScreen() {
                         }
                     }) { Text("清除配置") }
                 }
+                }
             }
         }
 
+        if (currentEngineId == "mimo") {
         // 自定义 User-Agent
         Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
             Column(modifier = Modifier.padding(16.dp)) {
@@ -361,6 +370,7 @@ fun SettingsScreen() {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        }
         }
 
         // 默认语音
@@ -525,8 +535,23 @@ fun SettingsScreen() {
     }
 }
 
-private tailrec fun Context.findActivity(): Activity? = when (this) {
-    is Activity -> this
-    is ContextWrapper -> baseContext.findActivity()
-    else -> null
+private suspend fun switchEngine(
+    settings: SettingsRepository,
+    db: AppDatabase,
+    engine: TTSEngine,
+    currentVoice: String,
+    currentStyle: String
+) {
+    val presetVoices = withContext(Dispatchers.IO) { engine.getVoices() }
+    val customVoices = withContext(Dispatchers.IO) { db.voiceDao().getVoiceItemsByEngine(engine.id).first() }
+    val availableVoiceNames = (presetVoices.map { it.name } + customVoices.map { it.name }).distinct()
+    val styles = withContext(Dispatchers.IO) { engine.getStyles() }
+
+    settings.updateCurrentEngine(engine.id)
+    if (availableVoiceNames.isNotEmpty() && currentVoice !in availableVoiceNames) {
+        settings.updateDefaultVoice(availableVoiceNames.first())
+    }
+    if (styles.isEmpty() || currentStyle !in styles) {
+        settings.updateDefaultStyle("无")
+    }
 }

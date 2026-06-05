@@ -61,7 +61,7 @@ class MiMoEngine(
     /** 根据音色名解析出请求用的模型与 voice 参数（自定义音色查库，否则按预设处理）。 */
     private suspend fun resolveVoice(voice: String): ResolvedVoice {
         val db = AppDatabase.getDatabase(com.voxengine.VoxEngineApplication.instance)
-        val customVoice = db.voiceDao().getVoiceByName(voice)
+        val customVoice = db.voiceDao().getVoiceByEngineAndName(id, voice)
         return when (customVoice?.type) {
             "clone" -> ResolvedVoice(MiMoTTSClient.MODEL_CLONE, customVoice.voiceParam)
             "design" -> ResolvedVoice(MiMoTTSClient.MODEL_DESIGN, customVoice.voiceParam)
@@ -156,7 +156,7 @@ class MiMoEngine(
     ): SynthesisResult {
         val speechText = SpeechTextNormalizer.normalize(text)
         val db = AppDatabase.getDatabase(com.voxengine.VoxEngineApplication.instance)
-        val customVoice = db.voiceDao().getVoiceByName(voice)
+        val customVoice = db.voiceDao().getVoiceByEngineAndName(id, voice)
         val voiceFingerprint = customVoice?.let { custom ->
             "${custom.engineId}:${custom.type}:${custom.model}:${custom.voiceParam.hashCode()}:${custom.createdAt}"
         } ?: "preset:$voice"
@@ -235,7 +235,7 @@ class MiMoEngine(
 
         // 加载自定义音色（轻量查询，不含 voiceParam/audioBase64）
         val db = AppDatabase.getDatabase(com.voxengine.VoxEngineApplication.instance)
-        val customVoices = db.voiceDao().getAllVoiceItems().first().map { item ->
+        val customVoices = db.voiceDao().getVoiceItemsByEngine(id).first().map { item ->
             val type = when (item.type) {
                 "clone" -> VoiceType.CLONE
                 "design" -> VoiceType.DESIGN
