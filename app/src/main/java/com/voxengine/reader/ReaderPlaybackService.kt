@@ -117,9 +117,9 @@ class ReaderPlaybackService : Service() {
         } catch (e: Exception) {
             LogManager.appendLog("E", TAG, "Reader playback failed: ${e.message}")
             updateNotification("听书失败: ${e.message ?: "未知错误"}", false)
-            state = null
             isPaused = false
             publishPlaybackState(false)
+            state = null
             stopForeground(STOP_FOREGROUND_DETACH)
             stopSelf()
         }
@@ -584,8 +584,9 @@ class ReaderPlaybackService : Service() {
         currentTrack?.releaseSafely()
         playbackJob = null
         currentTrack = null
-        state = null
         isPaused = false
+        publishPlaybackState(false)
+        state = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         if (releaseService) stopSelf()
     }
@@ -596,6 +597,19 @@ class ReaderPlaybackService : Service() {
 
     private fun sendProgress(chapterIndex: Int, pageIndex: Int, paragraphIndex: Int) {
         val playbackState = state ?: return
+        playbackState.chapterIndex = chapterIndex
+        playbackState.pageIndex = pageIndex
+        playbackState.paragraphIndex = paragraphIndex
+        playbackSnapshotRef.set(
+            PlaybackSnapshot(
+                uri = playbackState.uri,
+                chapterIndex = chapterIndex,
+                pageIndex = pageIndex,
+                paragraphIndex = paragraphIndex,
+                isListening = true,
+                isPaused = isPaused
+            )
+        )
         sendBroadcast(
             Intent(ACTION_PROGRESS)
                 .setPackage(packageName)
