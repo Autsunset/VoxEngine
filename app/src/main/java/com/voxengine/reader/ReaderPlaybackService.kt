@@ -36,6 +36,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
 
+private typealias PlaybackPosition = ReaderPlaybackPlanner.Position
+private typealias ChunkKey = ReaderPlaybackPlanner.ChunkKey
+
 data class PlaybackSnapshot(
     val uri: String,
     val chapterIndex: Int,
@@ -304,12 +307,14 @@ class ReaderPlaybackService : Service() {
         audioCache: MutableMap<ChunkKey, Deferred<Result<AudioChunk>>>,
         prefetchTail: Deferred<Result<AudioChunk>>?
     ): Deferred<Result<AudioChunk>>? {
-        val window = buildPrefetchWindow(
+        val window = ReaderPlaybackPlanner.buildPrefetchWindow(
             chapters = chapters,
             currentPosition = currentPosition,
             startParagraphIndex = startParagraphIndex,
             nextChapterPrefetchPageCount = nextChapterPrefetchPageCount,
-            playbackState = playbackState
+            pageTargetLength = playbackState.pageTargetLength,
+            maxChunks = ReaderPlaybackPlanner.MAX_PREFETCH_AHEAD,
+            pagesForChapter = pageProvider(chapters, playbackState)
         )
         var tail = prefetchTail
         for ((key, chunkText) in window) {
@@ -343,90 +348,23 @@ class ReaderPlaybackService : Service() {
         return tail
     }
 
-    private fun buildPrefetchWindow(
+    private fun pageProvider(
         chapters: List<TxtChapter>,
-        currentPosition: PlaybackPosition,
-        startParagraphIndex: Int,
-        nextChapterPrefetchPageCount: Int,
         playbackState: PlaybackState
-    ): List<Pair<ChunkKey, String>> = buildList {
-        val currentChapterPages = pagesForPlayback(chapters, currentPosition.chapterIndex, playbackState)
-        for (pageIndex in currentPosition.pageIndex until currentChapterPages.size) {
-            addAll(
-                chunkKeysForPlayback(
-                    chapters = chapters,
-                    position = PlaybackPosition(currentPosition.chapterIndex, pageIndex),
-                    playbackState = playbackState,
-                    startParagraphIndex = if (pageIndex == currentPosition.pageIndex) startParagraphIndex else 0
-                )
-            )
-        }
-
-        val nextChapterPosition = normalizePosition(chapters, PlaybackPosition(currentPosition.chapterIndex + 1, 0))
-        if (nextChapterPosition != null && nextChapterPosition.chapterIndex != currentPosition.chapterIndex) {
-            val nextChapterPages = pagesForPlayback(chapters, nextChapterPosition.chapterIndex, playbackState)
-            val pageCount = nextChapterPrefetchPageCount.coerceIn(0, nextChapterPages.size)
-            for (pageIndex in 0 until pageCount) {
-                addAll(
-                    chunkKeysForPlayback(
-                        chapters = chapters,
-                        position = PlaybackPosition(nextChapterPosition.chapterIndex, pageIndex),
-                        playbackState = playbackState,
-                        startParagraphIndex = 0
-                    )
-                )
-            }
-        }
-    }
+    ): (Int) -> List<TxtPage> = { chapterIndex -> pagesForPlayback(chapters, chapterIndex, playbackState) }
 
     private fun chunkKeysForPlayback(
         chapters: List<TxtChapter>,
         position: PlaybackPosition,
         playbackState: PlaybackState,
         startParagraphIndex: Int
-    ): List<Pair<ChunkKey, String>> {
-        val page = pagesForPlayback(chapters, position.chapterIndex, playbackState).getOrNull(position.pageIndex)
-            ?: return emptyList()
-        val startIndex = startParagraphIndex.coerceIn(0, page.paragraphs.size)
-        return page.paragraphs.drop(startIndex).flatMapIndexed { offset, paragraph ->
-            val paragraphIndex = startIndex + offset
-            splitTextForTts(paragraph).mapIndexed { chunkIndex, chunk ->
-                ChunkKey(position, paragraphIndex, chunkIndex) to chunk
-            }
-        }
-    }
-
-    private fun splitTextForTts(text: String): List<String> {
-        if (text.length <= MAX_TTS_CHUNK_CHARS) return listOf(text)
-        val chunks = mutableListOf<String>()
-        var start = 0
-        while (start < text.length) {
-            val end = chooseTtsSplitEnd(text, start)
-            chunks += text.substring(start, end)
-            start = end
-        }
-        return chunks.ifEmpty { listOf(text) }.also { parts ->
-            check(parts.joinToString(separator = "") == text) { "TTS split changed source text" }
-        }
-    }
-
-    private fun chooseTtsSplitEnd(text: String, start: Int): Int {
-        val maxEnd = minOf(text.length, start + MAX_TTS_CHUNK_CHARS)
-        if (maxEnd == text.length) return text.length
-        val minEnd = minOf(text.length, start + MIN_TTS_CHUNK_CHARS)
-        val sentenceEnd = findLastSplitChar(text, minEnd, maxEnd, SENTENCE_END_CHARS)
-        if (sentenceEnd > start) return sentenceEnd
-        val softEnd = findLastSplitChar(text, minEnd, maxEnd, SOFT_SPLIT_CHARS)
-        if (softEnd > start) return softEnd
-        return maxEnd
-    }
-
-    private fun findLastSplitChar(text: String, minEnd: Int, maxEnd: Int, chars: String): Int {
-        for (index in maxEnd - 1 downTo minEnd) {
-            if (text[index] in chars) return index + 1
-        }
-        return -1
-    }
+    ): List<Pair<ChunkKey, String>> = ReaderPlaybackPlanner.chunkKeysForPlayback(
+        chapters = chapters,
+        position = position,
+        startParagraphIndex = startParagraphIndex,
+        pageTargetLength = playbackState.pageTargetLength,
+        pagesForChapter = pageProvider(chapters, playbackState)
+    )
 
     private suspend fun synthesizeParagraph(
         engine: TTSEngine,
@@ -470,25 +408,22 @@ class ReaderPlaybackService : Service() {
 
     private fun normalizePosition(chapters: List<TxtChapter>, position: PlaybackPosition): PlaybackPosition? {
         val playbackState = state ?: return null
-        if (chapters.isEmpty()) return null
-        var chapterIndex = position.chapterIndex.coerceIn(0, chapters.lastIndex)
-        while (chapterIndex <= chapters.lastIndex) {
-            val pages = pagesForPlayback(chapters, chapterIndex, playbackState)
-            if (pages.isNotEmpty()) {
-                return PlaybackPosition(chapterIndex, position.pageIndex.coerceIn(0, pages.lastIndex))
-            }
-            chapterIndex += 1
-        }
-        return null
+        return ReaderPlaybackPlanner.normalizePosition(
+            chapters = chapters,
+            position = position,
+            pageTargetLength = playbackState.pageTargetLength,
+            pagesForChapter = pageProvider(chapters, playbackState)
+        )
     }
 
     private fun nextPosition(chapters: List<TxtChapter>, position: PlaybackPosition): PlaybackPosition? {
         val playbackState = state ?: return null
-        val pages = pagesForPlayback(chapters, position.chapterIndex, playbackState)
-        if (position.pageIndex < pages.lastIndex) return PlaybackPosition(position.chapterIndex, position.pageIndex + 1)
-        val nextChapter = position.chapterIndex + 1
-        if (nextChapter > chapters.lastIndex) return null
-        return normalizePosition(chapters, PlaybackPosition(nextChapter, 0))
+        return ReaderPlaybackPlanner.nextPosition(
+            chapters = chapters,
+            position = position,
+            pageTargetLength = playbackState.pageTargetLength,
+            pagesForChapter = pageProvider(chapters, playbackState)
+        )
     }
 
     private suspend fun playAudioChunk(wavData: ByteArray) = withContext(Dispatchers.IO) {
@@ -716,8 +651,6 @@ class ReaderPlaybackService : Service() {
         var speed: Float = 1.0f
     )
 
-    private data class PlaybackPosition(val chapterIndex: Int, val pageIndex: Int)
-    private data class ChunkKey(val position: PlaybackPosition, val paragraphIndex: Int, val chunkIndex: Int)
     private data class AudioChunk(val paragraphIndex: Int, val audioData: ByteArray)
 
     companion object {
@@ -759,10 +692,6 @@ class ReaderPlaybackService : Service() {
         private const val AUDIO_START_GRACE_MS = 1000L
         private const val DEFAULT_RETRY_COUNT = 3
         private const val DEFAULT_RETRY_BASE_DELAY_MS = 2000
-        private const val MIN_TTS_CHUNK_CHARS = 40
-        private const val MAX_TTS_CHUNK_CHARS = 180
-        private const val SENTENCE_END_CHARS = "。！？；.!?;"
-        private const val SOFT_SPLIT_CHARS = "，、,：:"
         private const val CHANNEL_ID = "reader_playback"
         private const val NOTIFICATION_ID = 2001
     }

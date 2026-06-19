@@ -38,7 +38,21 @@ class SettingsRepository(private val context: Context) {
     suspend fun updateDefaultVoice(voice: String) { context.dataStore.edit { it[KEY_DEFAULT_VOICE] = voice } }
     suspend fun updateDefaultStyle(style: String) { context.dataStore.edit { it[KEY_DEFAULT_STYLE] = style } }
     suspend fun updateSpeed(speed: Float) { context.dataStore.edit { it[KEY_SPEED] = speed } }
-    suspend fun updateDarkMode(enabled: Boolean) { context.dataStore.edit { it[KEY_DARK_MODE] = enabled } }
+    suspend fun updateDarkMode(enabled: Boolean) {
+        cacheDarkModeMirror(enabled)
+        context.dataStore.edit { it[KEY_DARK_MODE] = enabled }
+    }
+
+    // 夜间模式镜像到 SharedPreferences：启动时同步读取，避免在主线程阻塞读 DataStore（首次访问含磁盘 I/O）。
+    private val nightModeMirror by lazy {
+        context.getSharedPreferences(NIGHT_MODE_MIRROR_PREFS, Context.MODE_PRIVATE)
+    }
+
+    fun darkModeMirror(): Boolean = nightModeMirror.getBoolean(KEY_DARK_MODE_MIRROR, false)
+
+    fun cacheDarkModeMirror(enabled: Boolean) {
+        nightModeMirror.edit().putBoolean(KEY_DARK_MODE_MIRROR, enabled).apply()
+    }
     suspend fun updateCurrentEngine(engineId: String) { context.dataStore.edit { it[KEY_CURRENT_ENGINE] = engineId } }
     suspend fun updateUserAgent(ua: String) { context.dataStore.edit { it[KEY_USER_AGENT] = ua } }
     suspend fun updateParallelSynthesis(enabled: Boolean) { context.dataStore.edit { it[KEY_PARALLEL_SYNTHESIS] = enabled } }
@@ -77,5 +91,8 @@ class SettingsRepository(private val context: Context) {
         private val KEY_READER_CONSERVATIVE_REQUEST_INTERVAL_MS = intPreferencesKey("reader_conservative_request_interval_ms")
         private val KEY_READER_RETRY_COUNT = intPreferencesKey("reader_retry_count")
         private val KEY_READER_RETRY_BASE_DELAY_MS = intPreferencesKey("reader_retry_base_delay_ms")
+
+        private const val NIGHT_MODE_MIRROR_PREFS = "night_mode_mirror"
+        private const val KEY_DARK_MODE_MIRROR = "dark_mode"
     }
 }

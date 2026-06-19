@@ -11,6 +11,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 class MiMoTTSClient(
@@ -100,7 +101,11 @@ class MiMoTTSClient(
         val body = response.body?.string() ?: throw Exception("Empty response")
 
         if (!response.isSuccessful) {
-            throw Exception("API error ${response.code}: $body")
+            val message = "API error ${response.code}: $body"
+            // 429 限流与 5xx 服务端错误是瞬时的，抛 IOException 让 RetryPolicy 退避重试；
+            // 其余 4xx（鉴权/参数错误）不可重试，抛普通异常避免空转。
+            if (response.code == 429 || response.code in 500..599) throw IOException(message)
+            throw Exception(message)
         }
 
         val ttsResponse = gson.fromJson(body, TTSResponse::class.java)

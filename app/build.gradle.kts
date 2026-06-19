@@ -13,8 +13,8 @@ android {
         applicationId = "com.voxengine"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2606071
-        versionName = "2026.06.07.1"
+        versionCode = 2606201
+        versionName = "2026.06.20.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -75,10 +75,7 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.okhttp)
     implementation(libs.gson)
-    implementation(libs.media3.exoplayer)
-    implementation(libs.media3.ui)
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.coil.compose)
     debugImplementation(libs.androidx.ui.tooling)
     testImplementation(libs.junit)
 }

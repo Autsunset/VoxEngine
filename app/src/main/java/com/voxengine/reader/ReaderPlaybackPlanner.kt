@@ -3,6 +3,7 @@ package com.voxengine.reader
 object ReaderPlaybackPlanner {
     const val MIN_TTS_CHUNK_CHARS = 40
     const val MAX_TTS_CHUNK_CHARS = 180
+    const val MAX_PREFETCH_AHEAD = 8
 
     private const val SENTENCE_END_CHARS = "。！？；.!?;"
     private const val SOFT_SPLIT_CHARS = "，、,：:"
@@ -16,44 +17,48 @@ object ReaderPlaybackPlanner {
         startParagraphIndex: Int,
         nextChapterPrefetchPageCount: Int,
         pageTargetLength: Int,
+        maxChunks: Int = Int.MAX_VALUE,
         pagesForChapter: (Int) -> List<TxtPage> = { chapterIndex ->
             TxtNovelParser.paginate(chapters[chapterIndex].content, pageTargetLength)
         }
-    ): List<Pair<ChunkKey, String>> = buildList {
-        val currentChapterPages = pagesForChapter(currentPosition.chapterIndex)
-        for (pageIndex in currentPosition.pageIndex until currentChapterPages.size) {
-            addAll(
-                chunkKeysForPlayback(
-                    chapters = chapters,
-                    position = Position(currentPosition.chapterIndex, pageIndex),
-                    startParagraphIndex = if (pageIndex == currentPosition.pageIndex) startParagraphIndex else 0,
-                    pageTargetLength = pageTargetLength,
-                    pagesForChapter = pagesForChapter
-                )
-            )
-        }
-
-        val nextChapterPosition = normalizePosition(
-            chapters = chapters,
-            position = Position(currentPosition.chapterIndex + 1, 0),
-            pageTargetLength = pageTargetLength,
-            pagesForChapter = pagesForChapter
-        )
-        if (nextChapterPosition != null && nextChapterPosition.chapterIndex != currentPosition.chapterIndex) {
-            val nextChapterPages = pagesForChapter(nextChapterPosition.chapterIndex)
-            val pageCount = nextChapterPrefetchPageCount.coerceIn(0, nextChapterPages.size)
-            for (pageIndex in 0 until pageCount) {
+    ): List<Pair<ChunkKey, String>> {
+        val window = buildList {
+            val currentChapterPages = pagesForChapter(currentPosition.chapterIndex)
+            for (pageIndex in currentPosition.pageIndex until currentChapterPages.size) {
                 addAll(
                     chunkKeysForPlayback(
                         chapters = chapters,
-                        position = Position(nextChapterPosition.chapterIndex, pageIndex),
-                        startParagraphIndex = 0,
+                        position = Position(currentPosition.chapterIndex, pageIndex),
+                        startParagraphIndex = if (pageIndex == currentPosition.pageIndex) startParagraphIndex else 0,
                         pageTargetLength = pageTargetLength,
                         pagesForChapter = pagesForChapter
                     )
                 )
             }
+
+            val nextChapterPosition = normalizePosition(
+                chapters = chapters,
+                position = Position(currentPosition.chapterIndex + 1, 0),
+                pageTargetLength = pageTargetLength,
+                pagesForChapter = pagesForChapter
+            )
+            if (nextChapterPosition != null && nextChapterPosition.chapterIndex != currentPosition.chapterIndex) {
+                val nextChapterPages = pagesForChapter(nextChapterPosition.chapterIndex)
+                val pageCount = nextChapterPrefetchPageCount.coerceIn(0, nextChapterPages.size)
+                for (pageIndex in 0 until pageCount) {
+                    addAll(
+                        chunkKeysForPlayback(
+                            chapters = chapters,
+                            position = Position(nextChapterPosition.chapterIndex, pageIndex),
+                            startParagraphIndex = 0,
+                            pageTargetLength = pageTargetLength,
+                            pagesForChapter = pagesForChapter
+                        )
+                    )
+                }
+            }
         }
+        return if (maxChunks < window.size) window.take(maxChunks.coerceAtLeast(0)) else window
     }
 
     fun chunkKeysForPlayback(

@@ -32,6 +32,17 @@ class EdgeTTSEngine(
     ): SynthesisResult = withContext(Dispatchers.IO) {
         val speechText = SpeechTextNormalizer.normalize(text)
         val resolvedVoice = resolveVoiceId(voice)
+        // 纯标点/省略号等无可朗读内容的段落（如小说里单独成段的“……”）：直接跳过网络请求给一小段静音，
+        // 既保留自然停顿，又省去一次必然空音频的 WebSocket 往返。Edge 端真返回空音频时由 EdgeTTSClient 兜底。
+        if (!speechText.any { it.isLetterOrDigit() }) {
+            val silence = AudioUtils.silentWav()
+            return@withContext SynthesisResult(
+                audioData = silence,
+                format = AudioFormat.WAV,
+                sampleRate = AudioUtils.getWavSampleRate(silence),
+                elapsedMs = 0
+            )
+        }
         val cacheKey = AudioCache.generateKey(
             text = speechText,
             voice = voice,

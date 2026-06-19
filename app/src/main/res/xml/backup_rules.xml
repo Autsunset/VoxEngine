@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 及以下的自动备份规则。排除明文 API Key（DataStore）与含合成文本预览的日志，避免随云/adb 备份外泄。 -->
+<full-backup-content>
+    <exclude domain="file" path="datastore" />
+    <exclude domain="file" path="logs" />
+</full-backup-content>

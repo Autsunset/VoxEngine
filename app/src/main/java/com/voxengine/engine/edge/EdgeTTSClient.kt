@@ -50,7 +50,12 @@ class EdgeTTSClient {
             connectAndCollect(text, voice)
         }
 
-        if (mp3Bytes.isEmpty()) throw java.io.IOException("Edge TTS 未返回音频")
+        if (mp3Bytes.isEmpty()) {
+            // 已连接并收到 turn.end，但没有音频帧：Edge 对该文本不出声（常见于纯标点/省略号）。
+            // 返回静音占位而非抛可重试异常，避免触发重试风暴（2s/8s/18s 退避）并最终中断听书。
+            LogManager.appendLog("W", TAG, "Edge TTS 未返回音频，以静音占位 voice=$voice")
+            return AudioUtils.silentWav()
+        }
         LogManager.appendLog("D", TAG, "Edge TTS got ${mp3Bytes.size} bytes mp3 for voice=$voice")
         val decoded = Mp3Decoder.decodeToPcm(mp3Bytes)
         return AudioUtils.pcmToWav(decoded.pcm, decoded.sampleRate, decoded.channelCount, 16)

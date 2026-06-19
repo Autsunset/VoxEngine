@@ -134,4 +134,10 @@ object AudioUtils {
         System.arraycopy(pcmData, 0, wav, 44, dataSize)
         return wav
     }
+
+    /** 生成一段静音 WAV（16-bit 单声道）。用于无可朗读内容或引擎不出声时占位，保留自然停顿、避免链路异常。 */
+    fun silentWav(durationMs: Int = 400, sampleRate: Int = 24000): ByteArray {
+        val byteCount = (sampleRate.toLong() * durationMs / 1000L * 2L).toInt().coerceAtLeast(0)
+        return pcmToWav(ByteArray(byteCount), sampleRate, 1, 16)
+    }
 }

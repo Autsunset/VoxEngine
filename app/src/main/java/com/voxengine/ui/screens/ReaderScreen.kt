@@ -4,9 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.database.Cursor
-import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -77,11 +74,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -102,24 +96,13 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.content.ContextCompat
-import androidx.room.withTransaction
-import com.voxengine.data.AppDatabase
 import com.voxengine.data.ReaderBookEntity
-import com.voxengine.data.ReaderChapterEntity
-import com.voxengine.data.SettingsRepository
-import com.voxengine.engine.EngineRegistry
-import com.voxengine.reader.ReaderChapterCache
-import com.voxengine.reader.ReaderMeasuredPageCache
 import com.voxengine.reader.ReaderPlaybackService
 import com.voxengine.reader.PlaybackSnapshot
 import com.voxengine.reader.TxtChapter
-import com.voxengine.reader.TxtNovelParser
 import com.voxengine.reader.TxtPage
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.FileNotFoundException
 import kotlin.math.roundToInt
 
 private const val READER_PANEL_NONE = 0
@@ -134,354 +117,44 @@ fun ReaderScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val clipboard = LocalClipboardManager.current
-    val scope = rememberCoroutineScope()
-    val db = remember { AppDatabase.getDatabase(context) }
-    val settings = remember { SettingsRepository(context) }
-    val books by db.readerBookDao().getAll().collectAsState(initial = emptyList())
+    val viewModel: ReaderViewModel = viewModel()
+    val uiState by viewModel.uiState.collectAsState()
+    val books by viewModel.books.collectAsState()
 
-    val currentEngineId by settings.currentEngine.collectAsState(initial = "mimo")
-    val defaultVoice by settings.defaultVoice.collectAsState(initial = "冰糖")
-    val defaultStyle by settings.defaultStyle.collectAsState(initial = "无")
-    val activeEngine = remember(currentEngineId) { EngineRegistry.get(currentEngineId) }
-    val voices by produceState(initialValue = emptyList<com.voxengine.engine.VoiceInfo>(), activeEngine) {
-        value = activeEngine?.getVoices() ?: emptyList()
-    }
-    val readerGapMs by settings.readerParagraphGapMs.collectAsState(initial = 700)
-    val readerSleepMinutes by settings.readerSleepMinutes.collectAsState(initial = 0)
-    val readerStopAfterChapters by settings.readerStopAfterChapters.collectAsState(initial = 0)
-    val readerConservativeRequestIntervalMs by settings.readerConservativeRequestIntervalMs.collectAsState(initial = 5000)
-    val readerRetryCount by settings.readerRetryCount.collectAsState(initial = 3)
-    val readerRetryBaseDelayMs by settings.readerRetryBaseDelayMs.collectAsState(initial = 2000)
-
-    var readerGapMsDraft by remember { mutableIntStateOf(readerGapMs) }
-    var readerSleepMinutesDraft by remember { mutableIntStateOf(readerSleepMinutes) }
-    var readerStopAfterChaptersDraft by remember { mutableIntStateOf(readerStopAfterChapters) }
-    var readerConservativeRequestIntervalMsDraft by remember { mutableIntStateOf(readerConservativeRequestIntervalMs) }
-    var readerRetryCountDraft by remember { mutableIntStateOf(readerRetryCount) }
-    var readerRetryBaseDelayMsDraft by remember { mutableIntStateOf(readerRetryBaseDelayMs) }
-
-    var currentBook by remember { mutableStateOf<ReaderBookEntity?>(null) }
-    var chapters by remember { mutableStateOf<List<TxtChapter>>(emptyList()) }
-    var pages by remember { mutableStateOf<List<TxtPage>>(emptyList()) }
-    var chapterIndex by remember { mutableIntStateOf(0) }
-    var pageIndex by remember { mutableIntStateOf(0) }
-    var pageTargetLength by remember { mutableIntStateOf(160) }
-    var isLoadingBook by remember { mutableStateOf(false) }
-    var statusText by remember { mutableStateOf("") }
+    // 纯 UI 状态：菜单显隐 / 面板 / 音色下拉，无需在配置变更后存活，留在组合内。
     var menuVisible by remember { mutableStateOf(false) }
     var panelMode by remember { mutableIntStateOf(READER_PANEL_NONE) }
-    var selectedVoiceId by remember { mutableStateOf("冰糖") }
-    var selectedVoiceName by remember { mutableStateOf("冰糖") }
-    var selectedStyle by remember { mutableStateOf("") }
     var voiceExpanded by remember { mutableStateOf(false) }
-    var isListening by remember { mutableStateOf(false) }
-    var isPaused by remember { mutableStateOf(false) }
-    var selectedParagraphIndex by remember { mutableStateOf<Int?>(null) }
-    var pageAnimationKey by remember { mutableLongStateOf(0L) }
-    var pageAnimationForward by remember { mutableStateOf(true) }
-
-    DisposableEffect(Unit) {
-        onDispose { onReadingModeChanged(false) }
-    }
-
-    LaunchedEffect(currentBook != null) {
-        onReadingModeChanged(currentBook != null)
-    }
-
-    LaunchedEffect(readerGapMs) { readerGapMsDraft = readerGapMs }
-    LaunchedEffect(readerSleepMinutes) { readerSleepMinutesDraft = readerSleepMinutes }
-    LaunchedEffect(readerStopAfterChapters) { readerStopAfterChaptersDraft = readerStopAfterChapters }
-    LaunchedEffect(readerConservativeRequestIntervalMs) { readerConservativeRequestIntervalMsDraft = readerConservativeRequestIntervalMs }
-    LaunchedEffect(readerRetryCount) { readerRetryCountDraft = readerRetryCount }
-    LaunchedEffect(readerRetryBaseDelayMs) { readerRetryBaseDelayMsDraft = readerRetryBaseDelayMs }
-
-    fun pagesFor(chapter: Int): List<TxtPage> {
-        val bookUri = currentBook?.uri
-        if (bookUri != null) {
-            ReaderMeasuredPageCache.getChapterPages(bookUri, chapter)?.let { return it }
-        }
-        return chapters.getOrNull(chapter)?.content?.let { TxtNovelParser.paginate(it, pageTargetLength) }.orEmpty()
-    }
-
-    fun saveProgress() {
-        val book = currentBook ?: return
-        scope.launch(Dispatchers.IO) {
-            db.readerBookDao().updateProgress(book.uri, chapterIndex, pageIndex, 0)
-        }
-    }
-
-    fun setPosition(chapter: Int, page: Int, forward: Boolean = true) {
-        if (chapter !in chapters.indices) return
-        val nextPages = pagesFor(chapter)
-        val nextPageIndex = page.coerceIn(0, (nextPages.size - 1).coerceAtLeast(0))
-        if (chapter != chapterIndex || nextPageIndex != pageIndex) {
-            pageAnimationForward = forward
-            pageAnimationKey += 1L
-        }
-        chapterIndex = chapter
-        pages = nextPages
-        pageIndex = nextPageIndex
-        selectedParagraphIndex = null
-        saveProgress()
-    }
-
-    fun syncPlaybackSnapshot(snapshot: PlaybackSnapshot?) {
-        val book = currentBook ?: return
-        if (snapshot == null || snapshot.uri != book.uri || !snapshot.isListening) {
-            isListening = false
-            isPaused = false
-            return
-        }
-
-        isListening = true
-        isPaused = snapshot.isPaused
-        statusText = if (snapshot.isPaused) "听书已暂停" else "听书播放中"
-        if (snapshot.chapterIndex in chapters.indices &&
-            (snapshot.chapterIndex != chapterIndex || snapshot.pageIndex != pageIndex)
-        ) {
-            setPosition(
-                snapshot.chapterIndex,
-                snapshot.pageIndex,
-                forward = snapshot.chapterIndex > chapterIndex || snapshot.pageIndex > pageIndex
-            )
-        }
-    }
-
-    fun refreshCurrentPages(resetPage: Boolean) {
-        val nextPages = pagesFor(chapterIndex)
-        pages = nextPages
-        pageIndex = if (resetPage) 0 else pageIndex.coerceIn(0, (nextPages.size - 1).coerceAtLeast(0))
-        selectedParagraphIndex = null
-    }
-
-    fun openBook(book: ReaderBookEntity) {
-        currentBook = book
-        menuVisible = false
-        panelMode = READER_PANEL_NONE
-        isListening = false
-        isPaused = false
-        selectedParagraphIndex = null
-    }
-
-    fun sendPlayback(action: String) {
-        val intent = Intent(context, ReaderPlaybackService::class.java).setAction(action)
-        if (action == ReaderPlaybackService.ACTION_START) {
-            ContextCompat.startForegroundService(context, intent)
-        } else {
-            context.startService(intent)
-        }
-    }
-
-    fun startListening(paragraphIndex: Int = 0) {
-        val book = currentBook ?: return
-        val activeSnapshot = ReaderPlaybackService.getPlaybackSnapshot(book.uri)
-        if (activeSnapshot?.isListening == true) {
-            syncPlaybackSnapshot(activeSnapshot)
-            return
-        }
-        if (pages.isNotEmpty()) {
-            ReaderMeasuredPageCache.putChapterPages(book.uri, chapterIndex, pages)
-        }
-        val intent = Intent(context, ReaderPlaybackService::class.java).apply {
-            action = ReaderPlaybackService.ACTION_START
-            putExtra(ReaderPlaybackService.EXTRA_URI, book.uri)
-            putExtra(ReaderPlaybackService.EXTRA_TITLE, book.title)
-            putExtra(ReaderPlaybackService.EXTRA_VOICE, selectedVoiceId)
-            putExtra(ReaderPlaybackService.EXTRA_STYLE, selectedStyle)
-            putExtra(ReaderPlaybackService.EXTRA_ENGINE_ID, currentEngineId)
-            putExtra(ReaderPlaybackService.EXTRA_CHAPTER_INDEX, chapterIndex)
-            putExtra(ReaderPlaybackService.EXTRA_PAGE_INDEX, pageIndex)
-            putExtra(ReaderPlaybackService.EXTRA_PARAGRAPH_INDEX, paragraphIndex.coerceAtLeast(0))
-            putExtra(ReaderPlaybackService.EXTRA_PAGE_TARGET_LENGTH, pageTargetLength)
-            putExtra(ReaderPlaybackService.EXTRA_GAP_MS, readerGapMsDraft.toLong())
-            putExtra(ReaderPlaybackService.EXTRA_SLEEP_MINUTES, readerSleepMinutesDraft)
-            putExtra(ReaderPlaybackService.EXTRA_STOP_AFTER_CHAPTERS, readerStopAfterChaptersDraft)
-            putExtra(ReaderPlaybackService.EXTRA_CONSERVATIVE_REQUEST_INTERVAL_MS, readerConservativeRequestIntervalMsDraft)
-            putExtra(ReaderPlaybackService.EXTRA_RETRY_COUNT, readerRetryCountDraft)
-            putExtra(ReaderPlaybackService.EXTRA_RETRY_BASE_DELAY_MS, readerRetryBaseDelayMsDraft)
-        }
-        ContextCompat.startForegroundService(context, intent)
-        isListening = true
-        isPaused = false
-        selectedParagraphIndex = null
-        statusText = if (paragraphIndex > 0) "已从选中段落开始听书" else "听书已开始"
-    }
-
-    fun pauseListening() {
-        if (!isListening || isPaused) return
-        sendPlayback(ReaderPlaybackService.ACTION_PAUSE)
-        isPaused = true
-        statusText = "听书已暂停"
-    }
-
-    fun resumeListening() {
-        if (!isListening || !isPaused) return
-        sendPlayback(ReaderPlaybackService.ACTION_RESUME)
-        isPaused = false
-        statusText = "听书播放中"
-    }
-
-    fun stopListening() {
-        if (!isListening) return
-        sendPlayback(ReaderPlaybackService.ACTION_STOP)
-        isListening = false
-        isPaused = false
-        statusText = "听书已停止"
-    }
-
-    fun previousChapter() {
-        if (chapterIndex <= 0) return
-        if (isListening) sendPlayback(ReaderPlaybackService.ACTION_PREVIOUS_CHAPTER)
-        setPosition(chapterIndex - 1, 0, forward = false)
-    }
-
-    fun nextChapter() {
-        if (chapterIndex >= chapters.lastIndex) return
-        if (isListening) sendPlayback(ReaderPlaybackService.ACTION_NEXT_CHAPTER)
-        setPosition(chapterIndex + 1, 0, forward = true)
-    }
-
-    fun previousPage() {
-        when {
-            pageIndex > 0 -> {
-                pageAnimationForward = false
-                pageAnimationKey += 1L
-                pageIndex -= 1
-                selectedParagraphIndex = null
-                saveProgress()
-            }
-            chapterIndex > 0 -> {
-                val previousPages = pagesFor(chapterIndex - 1)
-                pageAnimationForward = false
-                pageAnimationKey += 1L
-                chapterIndex -= 1
-                pages = previousPages
-                pageIndex = (previousPages.size - 1).coerceAtLeast(0)
-                selectedParagraphIndex = null
-                saveProgress()
-            }
-        }
-    }
-
-    fun nextPage() {
-        when {
-            pageIndex < pages.lastIndex -> {
-                pageAnimationForward = true
-                pageAnimationKey += 1L
-                pageIndex += 1
-                selectedParagraphIndex = null
-                saveProgress()
-            }
-            chapterIndex < chapters.lastIndex -> setPosition(chapterIndex + 1, 0, forward = true)
-        }
-    }
 
     fun toggleReaderMenu() {
         menuVisible = !menuVisible
         if (!menuVisible) panelMode = READER_PANEL_NONE
     }
 
+    DisposableEffect(Unit) {
+        onDispose { onReadingModeChanged(false) }
+    }
+
+    LaunchedEffect(uiState.currentBook != null) {
+        onReadingModeChanged(uiState.currentBook != null)
+    }
+
     val openDocumentLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        scope.launch {
-            var firstBook: ReaderBookEntity? = null
-            uris.forEach { uri ->
-                val title = context.queryDisplayName(uri) ?: "本地小说.txt"
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                val book = ReaderBookEntity(uri = uri.toString(), title = title)
-                withContext(Dispatchers.IO) {
-                    db.withTransaction {
-                        db.readerChapterDao().deleteByBookUri(book.uri)
-                        db.readerBookDao().upsert(book)
-                    }
-                    ReaderChapterCache.clearBook(book.uri)
-                    ReaderMeasuredPageCache.clearBook(book.uri)
-                }
-                if (firstBook == null) firstBook = book
-            }
-            firstBook?.let { if (currentBook == null) openBook(it) }
-        }
+        viewModel.importBooks(uris)
     }
 
-    LaunchedEffect(currentBook?.uri, chapters.size) {
-        syncPlaybackSnapshot(ReaderPlaybackService.getPlaybackSnapshot(currentBook?.uri))
-    }
-
-    DisposableEffect(lifecycleOwner, currentBook?.uri, chapters.size) {
+    // 回前台时重新同步播放状态（服务可能在后台推进了进度）。
+    DisposableEffect(lifecycleOwner, uiState.currentBook?.uri) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                syncPlaybackSnapshot(ReaderPlaybackService.getPlaybackSnapshot(currentBook?.uri))
+                viewModel.syncPlaybackSnapshot(ReaderPlaybackService.getPlaybackSnapshot(uiState.currentBook?.uri))
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    LaunchedEffect(defaultVoice, defaultStyle) {
-        if (defaultVoice.isNotBlank()) selectedVoiceId = defaultVoice
-        selectedStyle = defaultStyle.takeIf { it != "无" }.orEmpty()
-    }
-
-    LaunchedEffect(voices, selectedVoiceId) {
-        val selected = voices.firstOrNull { it.id == selectedVoiceId || it.name == selectedVoiceId }
-        if (selected != null) {
-            selectedVoiceId = selected.id
-            selectedVoiceName = selected.name
-        } else if (voices.isNotEmpty()) {
-            selectedVoiceId = voices.first().id
-            selectedVoiceName = voices.first().name
-        }
-    }
-
-    LaunchedEffect(currentBook?.uri) {
-        val book = currentBook ?: return@LaunchedEffect
-        isLoadingBook = true
-        statusText = "正在解析 ${book.title}"
-        val parsed = withContext(Dispatchers.IO) {
-            runCatching {
-                ReaderChapterCache.getChapters(book.uri)
-                    ?: db.readerChapterDao().getChapters(book.uri)
-                        .map { it.toTxtChapter() }
-                        .takeIf { it.isNotEmpty() }
-                        ?.also { ReaderChapterCache.putChapters(book.uri, it) }
-                    ?: run {
-                        val bytes = context.contentResolver.openInputStream(Uri.parse(book.uri))?.use { it.readBytes() }
-                            ?: throw FileNotFoundException(book.uri)
-                        TxtNovelParser.parse(TxtNovelParser.decode(bytes)).also { parsedChapters ->
-                            ReaderChapterCache.putChapters(book.uri, parsedChapters)
-                            db.withTransaction {
-                                db.readerChapterDao().deleteByBookUri(book.uri)
-                                db.readerChapterDao().insertAll(
-                                    parsedChapters.mapIndexed { index, chapter ->
-                                        ReaderChapterEntity.fromTxtChapter(book.uri, index, chapter)
-                                    }
-                                )
-                            }
-                        }
-                    }
-            }
-        }
-        parsed.onSuccess { list ->
-            chapters = list
-            chapterIndex = book.lastChapterIndex.coerceIn(0, (list.size - 1).coerceAtLeast(0))
-            pages = list.getOrNull(chapterIndex)?.content?.let { TxtNovelParser.paginate(it, pageTargetLength) }.orEmpty()
-            pageIndex = book.lastPageIndex.coerceIn(0, (pages.size - 1).coerceAtLeast(0))
-            selectedParagraphIndex = null
-            statusText = "已载入 ${list.size} 章"
-        }.onFailure {
-            chapters = emptyList()
-            pages = emptyList()
-            chapterIndex = 0
-            pageIndex = 0
-            statusText = "打开失败: ${it.message}"
-        }
-        isLoadingBook = false
-    }
-
-
-    val book = currentBook
+    val book = uiState.currentBook
     if (book == null) {
         Scaffold(
             topBar = {
@@ -498,33 +171,29 @@ fun ReaderScreen(
             Bookshelf(
                 books = books,
                 onImport = { openDocumentLauncher.launch(arrayOf("text/plain", "text/*")) },
-                onOpen = ::openBook,
-                onDelete = { item ->
-                    scope.launch(Dispatchers.IO) {
-                        db.withTransaction {
-                            db.readerChapterDao().deleteByBookUri(item.uri)
-                            db.readerBookDao().deleteByUri(item.uri)
-                        }
-                        ReaderChapterCache.clearBook(item.uri)
-                        ReaderMeasuredPageCache.clearBook(item.uri)
-                    }
+                onOpen = { item ->
+                    menuVisible = false
+                    panelMode = READER_PANEL_NONE
+                    viewModel.openBook(item)
                 },
+                onDelete = { item -> viewModel.deleteBook(item) },
                 modifier = Modifier.padding(padding)
             )
         }
         return
     }
 
-    DisposableEffect(book.uri, chapters, chapterIndex, pageIndex) {
+    // 监听听书服务广播（进度 / 播放状态）。receiver 闭包读取实时 uiState，故仅在书本切换时重建。
+    DisposableEffect(book.uri) {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 val uri = intent.getStringExtra(ReaderPlaybackService.EXTRA_URI) ?: return
                 if (uri != book.uri) return
-                syncPlaybackSnapshot(
+                viewModel.syncPlaybackSnapshot(
                     PlaybackSnapshot(
                         uri = uri,
-                        chapterIndex = intent.getIntExtra(ReaderPlaybackService.EXTRA_CHAPTER_INDEX, chapterIndex),
-                        pageIndex = intent.getIntExtra(ReaderPlaybackService.EXTRA_PAGE_INDEX, pageIndex),
+                        chapterIndex = intent.getIntExtra(ReaderPlaybackService.EXTRA_CHAPTER_INDEX, uiState.chapterIndex),
+                        pageIndex = intent.getIntExtra(ReaderPlaybackService.EXTRA_PAGE_INDEX, uiState.pageIndex),
                         paragraphIndex = intent.getIntExtra(ReaderPlaybackService.EXTRA_PARAGRAPH_INDEX, 0),
                         isListening = intent.getBooleanExtra(
                             ReaderPlaybackService.EXTRA_IS_LISTENING,
@@ -548,44 +217,35 @@ fun ReaderScreen(
         onDispose { context.unregisterReceiver(receiver) }
     }
 
+    val canListen = uiState.isEngineConfigured && uiState.pages.isNotEmpty()
+
     Box(modifier = Modifier.fillMaxSize()) {
         ReaderPage(
             book = book,
-            chapters = chapters,
-            pages = pages,
-            chapterIndex = chapterIndex,
-            pageIndex = pageIndex,
-            isLoadingBook = isLoadingBook,
-            selectedParagraphIndex = selectedParagraphIndex,
-            pageAnimationKey = pageAnimationKey,
-            pageAnimationForward = pageAnimationForward,
-            onPageTargetChanged = { pageTargetLength = it },
+            chapters = uiState.chapters,
+            pages = uiState.pages,
+            chapterIndex = uiState.chapterIndex,
+            pageIndex = uiState.pageIndex,
+            isLoadingBook = uiState.isLoadingBook,
+            selectedParagraphIndex = uiState.selectedParagraphIndex,
+            pageAnimationKey = uiState.pageAnimationKey,
+            pageAnimationForward = uiState.pageAnimationForward,
+            onPageTargetChanged = { viewModel.onPageTargetChanged(it) },
             onPagesMeasured = { measuredChapterIndex, measuredPages ->
-                ReaderMeasuredPageCache.putChapterPages(book.uri, measuredChapterIndex, measuredPages)
-                if (measuredChapterIndex == chapterIndex && measuredPages != pages) {
-                    pages = measuredPages
-                    pageIndex = pageIndex.coerceIn(0, (measuredPages.size - 1).coerceAtLeast(0))
-                }
+                viewModel.onPagesMeasured(measuredChapterIndex, measuredPages)
             },
             onParagraphTap = {
-                if (selectedParagraphIndex != null) {
-                    selectedParagraphIndex = null
-                } else {
-                    toggleReaderMenu()
-                }
+                if (uiState.selectedParagraphIndex != null) viewModel.clearSelectedParagraph() else toggleReaderMenu()
             },
-            onParagraphLongPress = { index, _ ->
-                selectedParagraphIndex = index
-                statusText = "已选中该段"
-            },
+            onParagraphLongPress = { index, _ -> viewModel.selectParagraph(index) },
             onCopyParagraph = { paragraph ->
                 clipboard.setText(AnnotatedString(paragraph))
-                statusText = "已复制该段"
+                viewModel.setStatus("已复制该段")
             },
-            onReadFromParagraph = { index -> startListening(index) },
-            onPreviousPage = ::previousPage,
-            onNextPage = ::nextPage,
-            onCenterTap = ::toggleReaderMenu
+            onReadFromParagraph = { index -> viewModel.startListening(index) },
+            onPreviousPage = { viewModel.previousPage() },
+            onNextPage = { viewModel.nextPage() },
+            onCenterTap = { toggleReaderMenu() }
         )
 
         if (menuVisible) {
@@ -599,72 +259,67 @@ fun ReaderScreen(
             )
             ReaderTopMenu(
                 title = book.title,
-                chapterTitle = chapters.getOrNull(chapterIndex)?.title.orEmpty(),
+                chapterTitle = uiState.chapters.getOrNull(uiState.chapterIndex)?.title.orEmpty(),
                 onBack = {
-                    currentBook = null
                     menuVisible = false
                     panelMode = READER_PANEL_NONE
+                    viewModel.closeBook()
                 },
                 onImport = { openDocumentLauncher.launch(arrayOf("text/plain", "text/*")) },
                 modifier = Modifier.align(Alignment.TopCenter)
             )
             ReaderBottomMenu(
-                chapters = chapters,
-                currentChapterIndex = chapterIndex,
-                currentPageIndex = pageIndex,
-                pageCount = pages.size,
+                chapters = uiState.chapters,
+                currentChapterIndex = uiState.chapterIndex,
+                currentPageIndex = uiState.pageIndex,
+                pageCount = uiState.pages.size,
                 panelMode = panelMode,
-                selectedVoiceName = selectedVoiceName,
-                selectedStyle = selectedStyle,
-                voices = voices,
+                selectedVoiceName = uiState.selectedVoiceName,
+                selectedStyle = uiState.selectedStyle,
+                voices = uiState.voices,
                 voiceExpanded = voiceExpanded,
                 onVoiceExpandedChange = { voiceExpanded = it },
                 onVoiceSelected = { voice ->
-                    selectedVoiceId = voice.id
-                    selectedVoiceName = voice.name
+                    viewModel.selectVoice(voice)
                     voiceExpanded = false
-                    scope.launch { settings.updateDefaultVoice(voice.id) }
                 },
-                onStyleChange = {
-                    selectedStyle = it
-                    scope.launch { settings.updateDefaultStyle(it.ifBlank { "无" }) }
-                },
-                readerGapMs = readerGapMsDraft,
-                readerSleepMinutes = readerSleepMinutesDraft,
-                readerStopAfterChapters = readerStopAfterChaptersDraft,
-                conservativeRequestIntervalMs = readerConservativeRequestIntervalMsDraft,
-                retryCount = readerRetryCountDraft,
-                retryBaseDelayMs = readerRetryBaseDelayMsDraft,
-                onGapChange = { value -> readerGapMsDraft = value.coerceIn(0, 3000) },
-                onSleepChange = { value -> readerSleepMinutesDraft = value.coerceIn(0, 180) },
-                onStopAfterChaptersChange = { value -> readerStopAfterChaptersDraft = value.coerceIn(0, 20) },
-                onConservativeRequestIntervalChange = { value -> readerConservativeRequestIntervalMsDraft = value.coerceIn(500, 30_000) },
-                onRetryCountChange = { value -> readerRetryCountDraft = value.coerceIn(0, 8) },
-                onRetryBaseDelayChange = { value -> readerRetryBaseDelayMsDraft = value.coerceIn(500, 15_000) },
-                onGapChangeFinished = { scope.launch { settings.updateReaderParagraphGapMs(readerGapMsDraft) } },
-                onSleepChangeFinished = { scope.launch { settings.updateReaderSleepMinutes(readerSleepMinutesDraft) } },
-                onStopAfterChaptersChangeFinished = { scope.launch { settings.updateReaderStopAfterChapters(readerStopAfterChaptersDraft) } },
-                onConservativeRequestIntervalChangeFinished = { scope.launch { settings.updateReaderConservativeRequestIntervalMs(readerConservativeRequestIntervalMsDraft) } },
-                onRetryCountChangeFinished = { scope.launch { settings.updateReaderRetryCount(readerRetryCountDraft) } },
-                onRetryBaseDelayChangeFinished = { scope.launch { settings.updateReaderRetryBaseDelayMs(readerRetryBaseDelayMsDraft) } },
-                isListening = isListening,
-                isPaused = isPaused,
-                canListen = activeEngine?.isConfigured() == true && pages.isNotEmpty(),
-                statusText = statusText,
+                onStyleChange = { viewModel.setStyle(it) },
+                readerGapMs = uiState.readerGapMs,
+                readerSleepMinutes = uiState.readerSleepMinutes,
+                readerStopAfterChapters = uiState.readerStopAfterChapters,
+                conservativeRequestIntervalMs = uiState.conservativeRequestIntervalMs,
+                retryCount = uiState.retryCount,
+                retryBaseDelayMs = uiState.retryBaseDelayMs,
+                onGapChange = { viewModel.onGapChange(it) },
+                onSleepChange = { viewModel.onSleepChange(it) },
+                onStopAfterChaptersChange = { viewModel.onStopAfterChaptersChange(it) },
+                onConservativeRequestIntervalChange = { viewModel.onConservativeRequestIntervalChange(it) },
+                onRetryCountChange = { viewModel.onRetryCountChange(it) },
+                onRetryBaseDelayChange = { viewModel.onRetryBaseDelayChange(it) },
+                onGapChangeFinished = { viewModel.commitGap() },
+                onSleepChangeFinished = { viewModel.commitSleep() },
+                onStopAfterChaptersChangeFinished = { viewModel.commitStopAfterChapters() },
+                onConservativeRequestIntervalChangeFinished = { viewModel.commitConservativeRequestInterval() },
+                onRetryCountChangeFinished = { viewModel.commitRetryCount() },
+                onRetryBaseDelayChangeFinished = { viewModel.commitRetryBaseDelay() },
+                isListening = uiState.isListening,
+                isPaused = uiState.isPaused,
+                canListen = canListen,
+                statusText = uiState.statusText,
                 onPanelChange = { panelMode = if (panelMode == it) READER_PANEL_NONE else it },
                 onChapterSelected = { index ->
-                    setPosition(index, 0)
+                    viewModel.setPosition(index, 0)
                     panelMode = READER_PANEL_NONE
                 },
-                onPreviousChapter = ::previousChapter,
-                onNextChapter = ::nextChapter,
-                onPreviousPage = ::previousPage,
-                onNextPage = ::nextPage,
-                onPageSelected = { page -> setPosition(chapterIndex, page) },
-                onStartListening = { startListening() },
-                onPauseListening = ::pauseListening,
-                onResumeListening = ::resumeListening,
-                onStopListening = ::stopListening,
+                onPreviousChapter = { viewModel.previousChapter() },
+                onNextChapter = { viewModel.nextChapter() },
+                onPreviousPage = { viewModel.previousPage() },
+                onNextPage = { viewModel.nextPage() },
+                onPageSelected = { page -> viewModel.setPosition(uiState.chapterIndex, page) },
+                onStartListening = { viewModel.startListening() },
+                onPauseListening = { viewModel.pauseListening() },
+                onResumeListening = { viewModel.resumeListening() },
+                onStopListening = { viewModel.stopListening() },
                 modifier = Modifier.align(Alignment.BottomCenter)
             )
         }
@@ -1406,13 +1061,5 @@ private fun ReaderSettingsPanel(
             steps = 19
         )
         Spacer(Modifier.height(12.dp))
-    }
-}
-
-private fun android.content.Context.queryDisplayName(uri: Uri): String? {
-    val cursor: Cursor? = contentResolver.query(uri, null, null, null, null)
-    return cursor?.use {
-        val nameIndex = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-        if (nameIndex >= 0 && it.moveToFirst()) it.getString(nameIndex) else null
     }
 }

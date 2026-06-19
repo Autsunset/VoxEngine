@@ -89,4 +89,36 @@ class ReaderPlaybackPlannerTest {
             window.map { it.first }
         )
     }
+
+    @Test
+    fun buildPrefetchWindowRespectsMaxChunks() {
+        val chapters = listOf(TxtChapter("第一章", "正文"), TxtChapter("第二章", "正文"))
+        val pages = mapOf(
+            0 to listOf(TxtPage(listOf("a0", "a1", "a2")), TxtPage(listOf("b0", "b1"))),
+            1 to listOf(TxtPage(listOf("c0")))
+        )
+
+        val full = ReaderPlaybackPlanner.buildPrefetchWindow(
+            chapters = chapters,
+            currentPosition = ReaderPlaybackPlanner.Position(0, 0),
+            startParagraphIndex = 0,
+            nextChapterPrefetchPageCount = 1,
+            pageTargetLength = 220,
+            pagesForChapter = { pages.getValue(it) }
+        )
+        val capped = ReaderPlaybackPlanner.buildPrefetchWindow(
+            chapters = chapters,
+            currentPosition = ReaderPlaybackPlanner.Position(0, 0),
+            startParagraphIndex = 0,
+            nextChapterPrefetchPageCount = 1,
+            pageTargetLength = 220,
+            maxChunks = 2,
+            pagesForChapter = { pages.getValue(it) }
+        )
+
+        assertTrue(full.size > 2)
+        assertEquals(2, capped.size)
+        // 截断保留最靠前的 chunk，顺序与起点不变
+        assertEquals(full.take(2), capped)
+    }
 }
