@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
@@ -32,9 +33,36 @@ class SettingsRepository(private val context: Context) {
     val readerConservativeRequestIntervalMs: Flow<Int> = context.dataStore.data.map { it[KEY_READER_CONSERVATIVE_REQUEST_INTERVAL_MS] ?: 5000 }
     val readerRetryCount: Flow<Int> = context.dataStore.data.map { it[KEY_READER_RETRY_COUNT] ?: 3 }
     val readerRetryBaseDelayMs: Flow<Int> = context.dataStore.data.map { it[KEY_READER_RETRY_BASE_DELAY_MS] ?: 2000 }
-    // 分角色朗读档：旁白 / 对话 / 具名角色各自的音色与可选风格，整体序列化为 RoleProfile JSON。
+    // 分角色朗读档：旁白 / 对话 / 具名角色各自的音色与可选风格。
+    // 全局开关（所有书共用）。
     val readerRoleEnabled: Flow<Boolean> = context.dataStore.data.map { it[KEY_READER_ROLE_ENABLED] ?: false }
-    val readerRoleProfileJson: Flow<String> = context.dataStore.data.map { it[KEY_READER_ROLE_PROFILE_JSON] ?: "" }
+    // 按书的 URI 存储角色档（Map<String, String> JSON），不同书独立不冲突。
+    // 读取时优先取当前书的档，未命中则回落到旧的全局 KEY_READER_ROLE_PROFILE_JSON（如有则迁移）。
+    suspend fun getReaderRoleProfileForBook(bookUri: String): String {
+        val allJson = context.dataStore.data.first()[KEY_READER_ROLE_PROFILES_JSON] ?: ""
+        val map = parseStringMap(allJson)
+        val perBookJson = map[bookUri]
+        if (!perBookJson.isNullOrBlank()) return perBookJson
+        // 向后兼容：旧全局档迁移到当前书
+        val legacyJson = context.dataStore.data.first()[KEY_READER_ROLE_PROFILE_JSON]
+        if (!legacyJson.isNullOrBlank()) {
+            val updated = map.toMutableMap()
+            updated[bookUri] = legacyJson
+            context.dataStore.edit {
+                it[KEY_READER_ROLE_PROFILES_JSON] = serializeStringMap(updated)
+                it.remove(KEY_READER_ROLE_PROFILE_JSON)
+            }
+            return legacyJson
+        }
+        return ""
+    }
+
+    suspend fun updateReaderRoleProfileForBook(bookUri: String, json: String) {
+        val allJson = context.dataStore.data.first()[KEY_READER_ROLE_PROFILES_JSON] ?: ""
+        val map = parseStringMap(allJson).toMutableMap()
+        map[bookUri] = json
+        context.dataStore.edit { it[KEY_READER_ROLE_PROFILES_JSON] = serializeStringMap(map) }
+    }
 
     suspend fun updateBaseUrl(url: String) { context.dataStore.edit { it[KEY_BASE_URL] = url } }
     suspend fun updateApiKey(key: String) { context.dataStore.edit { it[KEY_API_KEY] = key } }
@@ -67,7 +95,6 @@ class SettingsRepository(private val context: Context) {
     suspend fun updateReaderRetryCount(count: Int) { context.dataStore.edit { it[KEY_READER_RETRY_COUNT] = count } }
     suspend fun updateReaderRetryBaseDelayMs(delayMs: Int) { context.dataStore.edit { it[KEY_READER_RETRY_BASE_DELAY_MS] = delayMs } }
     suspend fun updateReaderRoleEnabled(enabled: Boolean) { context.dataStore.edit { it[KEY_READER_ROLE_ENABLED] = enabled } }
-    suspend fun updateReaderRoleProfileJson(json: String) { context.dataStore.edit { it[KEY_READER_ROLE_PROFILE_JSON] = json } }
 
     fun getEngineConfig(engineId: String, key: String): Flow<String> {
         val configKey = stringPreferencesKey("${engineId}_$key")
@@ -97,9 +124,23 @@ class SettingsRepository(private val context: Context) {
         private val KEY_READER_RETRY_COUNT = intPreferencesKey("reader_retry_count")
         private val KEY_READER_RETRY_BASE_DELAY_MS = intPreferencesKey("reader_retry_base_delay_ms")
         private val KEY_READER_ROLE_ENABLED = booleanPreferencesKey("reader_role_enabled")
+        // 旧全局角色档（v2026.06.27.4 前），保留用于向后兼容迁移
         private val KEY_READER_ROLE_PROFILE_JSON = stringPreferencesKey("reader_role_profile_json")
+        // 新按书角色档：Map<书 URI, RoleProfile JSON>
+        private val KEY_READER_ROLE_PROFILES_JSON = stringPreferencesKey("reader_role_profiles_json")
 
         private const val NIGHT_MODE_MIRROR_PREFS = "night_mode_mirror"
         private const val KEY_DARK_MODE_MIRROR = "dark_mode"
+
+        private val gson by lazy { com.google.gson.Gson() }
+
+        private fun parseStringMap(json: String): Map<String, String> {
+            if (json.isBlank()) return emptyMap()
+            return runCatching {
+                gson.fromJson<Map<String, String>>(json, object : com.google.gson.reflect.TypeToken<Map<String, String>>() {}.type)
+            }.getOrNull() ?: emptyMap()
+        }
+
+        private fun serializeStringMap(map: Map<String, String>): String = gson.toJson(map)
     }
 }

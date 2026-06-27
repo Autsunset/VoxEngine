@@ -28,6 +28,9 @@ object RoleSegmenter {
     private const val OPEN_QUOTES = "“「『‘\""
     private const val CLOSE_QUOTES = "”」』’\""
 
+    /** 至少包含一个可朗读字符（Unicode 字母或数字），否则视为纯符号段应跳过。 */
+    private val HAS_SPEAKABLE_CONTENT = Regex("""[\p{L}\p{N}]""")
+
     /**
      * 说话人前缀正则：对话开引号之前的旁白尾部，形如「张三笑道：」「她道」「老李怒道」。
      * 结构 = 名字(1-10 中日韩/拉丁) + 可选情绪副词 + 可选“着/了” + 说类动词 + 可选“道/说/着”后缀 + 可选冒号 + 行尾。
@@ -59,13 +62,13 @@ object RoleSegmenter {
         fun pushNarration() {
             val s = buffer.toString().trim()
             buffer.clear()
-            if (s.isNotEmpty()) segments += RoleSegment(SpeechRole.NARRATION, null, s)
+            if (s.isNotEmpty() && HAS_SPEAKABLE_CONTENT.containsMatchIn(s)) segments += RoleSegment(SpeechRole.NARRATION, null, s)
         }
 
         fun pushDialogue() {
             val s = buffer.toString().trim()
             buffer.clear()
-            if (s.isNotEmpty()) segments += RoleSegment(SpeechRole.DIALOGUE, resolveSpeaker(lastNarration, configuredNames), s)
+            if (s.isNotEmpty() && HAS_SPEAKABLE_CONTENT.containsMatchIn(s)) segments += RoleSegment(SpeechRole.DIALOGUE, resolveSpeaker(lastNarration, configuredNames), s)
         }
 
         for (ch in normalized) {

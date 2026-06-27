@@ -78,11 +78,6 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settings.readerRetryBaseDelayMs.collect { v -> _uiState.update { it.copy(retryBaseDelayMs = v) } } }
         // 分角色朗读配置：持久值变化时同步到 UiState（草稿值，编辑后由 commit 持久化）。
         viewModelScope.launch { settings.readerRoleEnabled.collect { v -> _uiState.update { it.copy(roleEnabled = v) } } }
-        viewModelScope.launch {
-            settings.readerRoleProfileJson.collect { json ->
-                _uiState.update { it.copy(roleProfile = com.voxengine.reader.RoleProfileJson.parse(json)) }
-            }
-        }
     }
 
     private suspend fun onEngineChanged(engineId: String) {
@@ -154,6 +149,10 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
     fun openBook(book: ReaderBookEntity) {
         _uiState.update {
             it.copy(currentBook = book, isListening = false, isPaused = false, selectedParagraphIndex = null)
+        }
+        viewModelScope.launch {
+            val profileJson = settings.getReaderRoleProfileForBook(book.uri)
+            _uiState.update { it.copy(roleProfile = com.voxengine.reader.RoleProfileJson.parse(profileJson)) }
         }
         loadBook()
     }
@@ -502,7 +501,8 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
     private fun updateRoleProfile(transform: (com.voxengine.reader.RoleProfile) -> com.voxengine.reader.RoleProfile) {
         val updated = transform(_uiState.value.roleProfile)
         _uiState.update { it.copy(roleProfile = updated) }
-        viewModelScope.launch { settings.updateReaderRoleProfileJson(com.voxengine.reader.RoleProfileJson.serialize(updated)) }
+        val bookUri = _uiState.value.currentBook?.uri ?: return
+        viewModelScope.launch { settings.updateReaderRoleProfileForBook(bookUri, com.voxengine.reader.RoleProfileJson.serialize(updated)) }
     }
 
     fun onGapChange(value: Int) = _uiState.update { it.copy(readerGapMs = value.coerceIn(0, 3000)) }

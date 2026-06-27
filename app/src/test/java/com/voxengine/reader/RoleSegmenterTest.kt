@@ -86,6 +86,24 @@ class RoleSegmenterTest {
     }
 
     @Test
+    fun symbolOnlySegmentIsFilteredOut() {
+        // "..." 纯符号段没有可朗读内容，应跳过
+        assertTrue(RoleSegmenter.segment("...").isEmpty())
+        // "——" 破折号也没有可朗读内容
+        assertTrue(RoleSegmenter.segment("——").isEmpty())
+        // 混合符号
+        assertTrue(RoleSegmenter.segment("... . ~").isEmpty())
+    }
+
+    @Test
+    fun symbolWithLetterIsKept() {
+        // 包含至少一个字母/数字的段落不应被过滤
+        val segments = RoleSegmenter.segment("嗯.")
+        assertEquals(1, segments.size)
+        assertEquals("嗯.", segments[0].text)
+    }
+
+    @Test
     fun voiceForResolvesByRoleAndCharacterMap() {
         val narration = RoleSegment(SpeechRole.NARRATION, null, "n")
         val dialogue = RoleSegment(SpeechRole.DIALOGUE, null, "d")
