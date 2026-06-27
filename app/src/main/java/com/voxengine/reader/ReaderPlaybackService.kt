@@ -82,6 +82,7 @@ class ReaderPlaybackService : Service() {
 
     private fun startPlayback(intent: Intent) {
         val uri = intent.getStringExtra(EXTRA_URI) ?: return
+        val characterVoices = parseCharacterVoices(intent.getStringExtra(EXTRA_CHARACTER_VOICES_JSON))
         state = PlaybackState(
             uri = uri,
             title = intent.getStringExtra(EXTRA_TITLE) ?: "本地小说",
@@ -102,7 +103,12 @@ class ReaderPlaybackService : Service() {
                 DEFAULT_CONSERVATIVE_REQUEST_INTERVAL_MS
             ).coerceIn(500, 30_000).toLong(),
             retryCount = intent.getIntExtra(EXTRA_RETRY_COUNT, DEFAULT_RETRY_COUNT).coerceIn(0, 8),
-            retryBaseDelayMs = intent.getIntExtra(EXTRA_RETRY_BASE_DELAY_MS, DEFAULT_RETRY_BASE_DELAY_MS).coerceIn(500, 15_000).toLong()
+            retryBaseDelayMs = intent.getIntExtra(EXTRA_RETRY_BASE_DELAY_MS, DEFAULT_RETRY_BASE_DELAY_MS).coerceIn(500, 15_000).toLong(),
+            // 分角色朗读：开启后旁白/对话/具名角色分别路由到不同音色；未配置项回落到 voice。
+            roleEnabled = intent.getBooleanExtra(EXTRA_ROLE_ENABLED, false),
+            narrationVoice = intent.getStringExtra(EXTRA_NARRATION_VOICE)?.ifBlank { null },
+            dialogueVoice = intent.getStringExtra(EXTRA_DIALOGUE_VOICE)?.ifBlank { null },
+            characterVoices = characterVoices
         )
         playbackJob?.cancel()
         currentTrack?.releaseSafely()
@@ -110,6 +116,15 @@ class ReaderPlaybackService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification("准备播放", isPlaying = true))
         playbackJob = serviceScope.launch { runPlayback() }
         publishPlaybackState(true)
+    }
+
+    /** 解析角色→音色映射 JSON（{"张三":"音色A", ...}）；空/失败返回空 map。 */
+    private fun parseCharacterVoices(json: String?): Map<String, String> {
+        if (json.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val type = object : com.google.gson.reflect.TypeToken<Map<String, String>>() {}.type
+            com.google.gson.Gson().fromJson<Map<String, String>>(json, type) ?: emptyMap()
+        }.getOrDefault(emptyMap())
     }
 
     private suspend fun runPlayback() {
@@ -166,7 +181,9 @@ class ReaderPlaybackService : Service() {
             return
         }
         val customVoice = withContext(Dispatchers.IO) { db.voiceDao().getVoiceByName(playbackState.voice) }
-        val conservativeSynthesis = customVoice?.type == "clone" || customVoice?.type == "design"
+        val defaultConservative = customVoice?.type == "clone" || customVoice?.type == "design"
+        // 分角色开启时，旁白/对话/各角色音色可能各异；预取所有可能用到的音色的类型，决定是否需要节流。
+        val voiceConservative = buildVoiceConservativeMap(playbackState, db, defaultConservative)
 
         var position = normalizePosition(chapters, PlaybackPosition(playbackState.chapterIndex, playbackState.pageIndex))
         val startPosition = position
@@ -199,7 +216,7 @@ class ReaderPlaybackService : Service() {
                 nextChapterPrefetchPageCount = nextChapterPrefetchPageCount,
                 playbackState = playbackState,
                 engine = engine,
-                conservativeSynthesis = conservativeSynthesis,
+                voiceConservative = voiceConservative,
                 audioCache = audioCache,
                 prefetchTail = prefetchTail
             )
@@ -215,11 +232,13 @@ class ReaderPlaybackService : Service() {
             var pageFailed = false
             var lastProgressParagraphIndex = -1
             for (index in currentChunks.indices) {
-                val (key, chunkText) = currentChunks[index]
+                val (key, roleChunk) = currentChunks[index]
                 val nextKey = currentChunks.getOrNull(index + 1)?.first
                 while (currentCoroutineContext().isActive && isPaused) delay(150)
                 if (!currentCoroutineContext().isActive) break
 
+                val resolvedVoice = resolveVoice(playbackState, roleChunk)
+                val conservativeForChunk = voiceConservative[resolvedVoice] ?: defaultConservative
                 val preparedResult = audioCache[key]?.await()
                 audioCache.remove(key)
                 var chunk = preparedResult?.getOrNull()
@@ -234,11 +253,11 @@ class ReaderPlaybackService : Service() {
                     chunk = try {
                         synthesizeParagraph(
                             engine,
-                            chunkText,
-                            playbackState.voice,
+                            roleChunk.text,
+                            resolvedVoice,
                             playbackState.style,
                             key.paragraphIndex,
-                            conservativeSynthesis,
+                            conservativeForChunk,
                             playbackState.conservativeRequestIntervalMs,
                             playbackState.retryCount,
                             playbackState.retryBaseDelayMs
@@ -303,22 +322,38 @@ class ReaderPlaybackService : Service() {
         nextChapterPrefetchPageCount: Int,
         playbackState: PlaybackState,
         engine: TTSEngine,
-        conservativeSynthesis: Boolean,
+        voiceConservative: Map<String, Boolean>,
         audioCache: MutableMap<ChunkKey, Deferred<Result<AudioChunk>>>,
         prefetchTail: Deferred<Result<AudioChunk>>?
     ): Deferred<Result<AudioChunk>>? {
-        val window = ReaderPlaybackPlanner.buildPrefetchWindow(
-            chapters = chapters,
-            currentPosition = currentPosition,
-            startParagraphIndex = startParagraphIndex,
-            nextChapterPrefetchPageCount = nextChapterPrefetchPageCount,
-            pageTargetLength = playbackState.pageTargetLength,
-            maxChunks = ReaderPlaybackPlanner.MAX_PREFETCH_AHEAD,
-            pagesForChapter = pageProvider(chapters, playbackState)
-        )
+        val window: List<Pair<ChunkKey, ReaderPlaybackPlanner.RoleChunk>> =
+            if (playbackState.roleEnabled) {
+                ReaderPlaybackPlanner.buildPrefetchWindowRoleAware(
+                    chapters = chapters,
+                    currentPosition = currentPosition,
+                    startParagraphIndex = startParagraphIndex,
+                    nextChapterPrefetchPageCount = nextChapterPrefetchPageCount,
+                    pageTargetLength = playbackState.pageTargetLength,
+                    maxChunks = ReaderPlaybackPlanner.MAX_PREFETCH_AHEAD,
+                    pagesForChapter = pageProvider(chapters, playbackState)
+                )
+            } else {
+                ReaderPlaybackPlanner.buildPrefetchWindow(
+                    chapters = chapters,
+                    currentPosition = currentPosition,
+                    startParagraphIndex = startParagraphIndex,
+                    nextChapterPrefetchPageCount = nextChapterPrefetchPageCount,
+                    pageTargetLength = playbackState.pageTargetLength,
+                    maxChunks = ReaderPlaybackPlanner.MAX_PREFETCH_AHEAD,
+                    pagesForChapter = pageProvider(chapters, playbackState)
+                ).map { (key, text) ->
+                    key to ReaderPlaybackPlanner.RoleChunk(SpeechRole.NARRATION, null, text)
+                }
+            }
         var tail = prefetchTail
-        for ((key, chunkText) in window) {
+        for ((key, roleChunk) in window) {
             if (audioCache.containsKey(key)) continue
+            val resolvedVoice = resolveVoice(playbackState, roleChunk)
             val previous = tail
             val deferred = CoroutineScope(currentCoroutineContext()).async(Dispatchers.IO) {
                 previous?.await()
@@ -326,11 +361,11 @@ class ReaderPlaybackService : Service() {
                     Result.success(
                         synthesizeParagraph(
                             engine,
-                            chunkText,
-                            playbackState.voice,
+                            roleChunk.text,
+                            resolvedVoice,
                             playbackState.style,
                             key.paragraphIndex,
-                            conservativeSynthesis,
+                            voiceConservative[resolvedVoice] ?: false,
                             playbackState.conservativeRequestIntervalMs,
                             playbackState.retryCount,
                             playbackState.retryBaseDelayMs
@@ -358,13 +393,62 @@ class ReaderPlaybackService : Service() {
         position: PlaybackPosition,
         playbackState: PlaybackState,
         startParagraphIndex: Int
-    ): List<Pair<ChunkKey, String>> = ReaderPlaybackPlanner.chunkKeysForPlayback(
-        chapters = chapters,
-        position = position,
-        startParagraphIndex = startParagraphIndex,
-        pageTargetLength = playbackState.pageTargetLength,
-        pagesForChapter = pageProvider(chapters, playbackState)
+    ): List<Pair<ChunkKey, ReaderPlaybackPlanner.RoleChunk>> {
+        // 角色开启：按旁白/对话切分；关闭：退化为单 NARRATION（与历史 chunking 完全一致）。
+        return if (playbackState.roleEnabled) {
+            ReaderPlaybackPlanner.chunkKeysForPlaybackRoleAware(
+                chapters = chapters,
+                position = position,
+                startParagraphIndex = startParagraphIndex,
+                pageTargetLength = playbackState.pageTargetLength,
+                pagesForChapter = pageProvider(chapters, playbackState)
+            )
+        } else {
+            ReaderPlaybackPlanner.chunkKeysForPlayback(
+                chapters = chapters,
+                position = position,
+                startParagraphIndex = startParagraphIndex,
+                pageTargetLength = playbackState.pageTargetLength,
+                pagesForChapter = pageProvider(chapters, playbackState)
+            ).map { (key, text) ->
+                key to ReaderPlaybackPlanner.RoleChunk(SpeechRole.NARRATION, null, text)
+            }
+        }
+    }
+
+    /** 按 [RoleSegmenter.voiceFor] 解析片段应使用的音色；未配置项回落到全书默认音色。 */
+    private fun resolveVoice(
+        playbackState: PlaybackState,
+        chunk: ReaderPlaybackPlanner.RoleChunk
+    ): String = RoleSegmenter.voiceFor(
+        role = chunk.role,
+        character = chunk.character,
+        narrationVoice = playbackState.narrationVoice,
+        dialogueVoice = playbackState.dialogueVoice,
+        characterVoices = playbackState.characterVoices,
+        fallback = playbackState.voice
     )
+
+    /**
+     * 预取所有可能被用到的音色（默认 + 旁白 + 对话 + 各角色）的"是否克隆/设计"标记。
+     * 克隆/设计音色需节流，且现在不同片段可能用不同音色，故按音色名查一次缓存。
+     */
+    private suspend fun buildVoiceConservativeMap(
+        playbackState: PlaybackState,
+        db: AppDatabase,
+        defaultConservative: Boolean
+    ): Map<String, Boolean> = withContext(Dispatchers.IO) {
+        val names = buildSet {
+            add(playbackState.voice)
+            playbackState.narrationVoice?.let { add(it) }
+            playbackState.dialogueVoice?.let { add(it) }
+            addAll(playbackState.characterVoices.values)
+        }
+        names.associateWith { name ->
+            if (name == playbackState.voice) defaultConservative
+            else db.voiceDao().getVoiceByName(name)?.let { it.type == "clone" || it.type == "design" } ?: false
+        }
+    }
 
     private suspend fun synthesizeParagraph(
         engine: TTSEngine,
@@ -648,6 +732,10 @@ class ReaderPlaybackService : Service() {
         val conservativeRequestIntervalMs: Long,
         val retryCount: Int,
         val retryBaseDelayMs: Long,
+        val roleEnabled: Boolean = false,
+        val narrationVoice: String? = null,
+        val dialogueVoice: String? = null,
+        val characterVoices: Map<String, String> = emptyMap(),
         var speed: Float = 1.0f
     )
 
@@ -686,6 +774,10 @@ class ReaderPlaybackService : Service() {
         const val EXTRA_CONSERVATIVE_REQUEST_INTERVAL_MS = "conservative_request_interval_ms"
         const val EXTRA_RETRY_COUNT = "retry_count"
         const val EXTRA_RETRY_BASE_DELAY_MS = "retry_base_delay_ms"
+        const val EXTRA_ROLE_ENABLED = "role_enabled"
+        const val EXTRA_NARRATION_VOICE = "narration_voice"
+        const val EXTRA_DIALOGUE_VOICE = "dialogue_voice"
+        const val EXTRA_CHARACTER_VOICES_JSON = "character_voices_json"
 
         private const val TAG = "ReaderPlaybackService"
         private const val DEFAULT_CONSERVATIVE_REQUEST_INTERVAL_MS = 5000

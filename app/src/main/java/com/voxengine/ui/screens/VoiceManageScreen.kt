@@ -15,6 +15,8 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,6 +30,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
@@ -35,6 +38,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -87,6 +91,7 @@ fun VoiceManageScreen() {
 
     var showAddDialog by remember { mutableStateOf(false) }
     var showDesignDialog by remember { mutableStateOf(false) }
+    var editingVoice by remember { mutableStateOf<com.voxengine.data.VoiceListItem?>(null) }
     var previewingVoice by remember { mutableStateOf<String?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
     val supportsClone = activeEngine?.supportsVoiceClone ?: false
@@ -172,6 +177,7 @@ fun VoiceManageScreen() {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(voice.name, style = MaterialTheme.typography.bodyLarge)
                             Text(voice.description, style = MaterialTheme.typography.bodySmall)
+                            VoiceMetaLine(gender = voice.gender, ageGroup = voice.ageGroup, tags = voice.tags)
                         }
                         IconButton(
                             onClick = {
@@ -210,51 +216,80 @@ fun VoiceManageScreen() {
                     Text("自定义音色", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(8.dp))
                 }
-                items(voices) { voice ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Row(
-                            modifier = Modifier.padding(16.dp).fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(voice.name, style = MaterialTheme.typography.bodyLarge)
-                                Text(
-                                    if (voice.type == "clone") "克隆音色" else "设计: ${voice.description}",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-                            IconButton(
-                                onClick = {
-                                    scope.launch {
-                                        previewingVoice = voice.name
-                                        isPlaying = true
-                                        try {
-                                            val engine = EngineRegistry.getActive(currentEngineId)
-                                            val result = withContext(Dispatchers.IO) {
-                                                engine.synthesize("你好，这是试听。", voice.name)
+                // 按性别分组：男声 / 女声 / 中性 / 未分类，便于按角色挑音色。
+                val grouped = voices.groupBy { it.gender ?: "unspecified" }
+                val sectionOrder = listOf(
+                    com.voxengine.engine.VoiceGender.MALE to "男声",
+                    com.voxengine.engine.VoiceGender.FEMALE to "女声",
+                    com.voxengine.engine.VoiceGender.NEUTRAL to "中性",
+                    "unspecified" to "未分类"
+                )
+                sectionOrder.forEach { (key, label) ->
+                    val group = grouped[key]
+                    if (!group.isNullOrEmpty()) {
+                        item {
+                            Text(
+                                "$label（${group.size}）",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
+                            )
+                        }
+                        items(group) { voice ->
+                            Card(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(voice.name, style = MaterialTheme.typography.bodyLarge)
+                                        Text(
+                                            if (voice.type == "clone") "克隆音色" else "设计: ${voice.description}",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                        VoiceMetaLine(
+                                            gender = voice.gender,
+                                            ageGroup = voice.ageGroup,
+                                            tags = com.voxengine.engine.VoiceTags.parse(voice.tags)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            scope.launch {
+                                                previewingVoice = voice.name
+                                                isPlaying = true
+                                                try {
+                                                    val engine = EngineRegistry.getActive(currentEngineId)
+                                                    val result = withContext(Dispatchers.IO) {
+                                                        engine.synthesize("你好，这是试听。", voice.name)
+                                                    }
+                                                    playAudio(result.audioData)
+                                                } catch (e: Exception) {
+                                                    // ignore
+                                                } finally {
+                                                    isPlaying = false
+                                                    previewingVoice = null
+                                                }
                                             }
-                                            playAudio(result.audioData)
-                                        } catch (e: Exception) {
-                                            // ignore
-                                        } finally {
-                                            isPlaying = false
-                                            previewingVoice = null
+                                        },
+                                        enabled = !isPlaying
+                                    ) {
+                                        if (previewingVoice == voice.name && isPlaying) {
+                                            CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                        } else {
+                                            Icon(Icons.Default.PlayArrow, "试听")
                                         }
                                     }
-                                },
-                                enabled = !isPlaying
-                            ) {
-                                if (previewingVoice == voice.name && isPlaying) {
-                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                                } else {
-                                    Icon(Icons.Default.PlayArrow, "试听")
+                                    IconButton(onClick = { editingVoice = voice }) {
+                                        Icon(Icons.Default.Edit, "编辑标签")
+                                    }
+                                    IconButton(onClick = {
+                                        scope.launch { db.voiceDao().deleteById(voice.id) }
+                                    }) {
+                                        Icon(Icons.Default.Delete, "删除")
+                                    }
                                 }
-                            }
-                            IconButton(onClick = {
-                                scope.launch { db.voiceDao().deleteById(voice.id) }
-                            }) {
-                                Icon(Icons.Default.Delete, "删除")
                             }
                         }
                     }
@@ -328,6 +363,22 @@ fun VoiceManageScreen() {
                         )
                     )
                     showDesignDialog = false
+                }
+            }
+        )
+    }
+
+    editingVoice?.let { voice ->
+        EditVoiceMetaDialog(
+            voice = voice,
+            onDismiss = { editingVoice = null },
+            onSave = { gender, ageGroup, tags ->
+                scope.launch {
+                    val entity = db.voiceDao().getVoiceById(voice.id)
+                    if (entity != null) {
+                        db.voiceDao().update(entity.copy(gender = gender, ageGroup = ageGroup, tags = tags))
+                    }
+                    editingVoice = null
                 }
             }
         )
@@ -660,4 +711,91 @@ private fun encodeWav(pcmData: ByteArray, sampleRate: Int, channels: Int, bitsPe
     header[42] = (dataSize shr 16 and 0xFF).toByte(); header[43] = (dataSize shr 24 and 0xFF).toByte()
 
     return header + pcmData
+}
+
+/** 一行展示音色的性别 / 年龄段 / 自定义标签，无值则不占行。 */
+@Composable
+private fun VoiceMetaLine(
+    gender: String?,
+    ageGroup: String?,
+    tags: List<String>
+) {
+    val parts = mutableListOf<String>()
+    gender?.let { parts += com.voxengine.engine.VoiceGender.labelOf(it) }
+    ageGroup?.let { parts += com.voxengine.engine.VoiceAgeGroup.labelOf(it) }
+    parts += tags
+    if (parts.isEmpty()) return
+    Text(
+        parts.joinToString(" · "),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+/** 编辑自定义音色的性别 / 年龄段 / 标签。预设音色不入库，不经过此对话框。 */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun EditVoiceMetaDialog(
+    voice: com.voxengine.data.VoiceListItem,
+    onDismiss: () -> Unit,
+    onSave: (gender: String?, ageGroup: String?, tags: String) -> Unit
+) {
+    // null 表示"未分类/未设置"，与库里的 null 对齐（存 null 而非空串）。
+    var gender by remember { mutableStateOf(voice.gender) }
+    var ageGroup by remember { mutableStateOf(voice.ageGroup) }
+    var tagsText by remember { mutableStateOf(voice.tags ?: "") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("编辑音色信息") },
+        text = {
+            Column {
+                Text(voice.name, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(8.dp))
+                Text("性别", style = MaterialTheme.typography.labelMedium)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(vertical = 4.dp)
+                ) {
+                    FilterChip(selected = gender == null, onClick = { gender = null }, label = { Text("未分类") })
+                    com.voxengine.engine.VoiceGender.ALL.forEach { g ->
+                        FilterChip(
+                            selected = gender == g,
+                            onClick = { gender = if (gender == g) null else g },
+                            label = { Text(com.voxengine.engine.VoiceGender.labelOf(g)) }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text("年龄段", style = MaterialTheme.typography.labelMedium)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(vertical = 4.dp)
+                ) {
+                    FilterChip(selected = ageGroup == null, onClick = { ageGroup = null }, label = { Text("未设置") })
+                    com.voxengine.engine.VoiceAgeGroup.ALL.forEach { a ->
+                        FilterChip(
+                            selected = ageGroup == a,
+                            onClick = { ageGroup = if (ageGroup == a) null else a },
+                            label = { Text(com.voxengine.engine.VoiceAgeGroup.labelOf(a)) }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = tagsText,
+                    onValueChange = { tagsText = it },
+                    label = { Text("自定义标签") },
+                    placeholder = { Text("用逗号分隔，如：旁白,温柔") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onSave(gender, ageGroup, com.voxengine.engine.VoiceTags.parse(tagsText).let { com.voxengine.engine.VoiceTags.join(it) })
+            }) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
 }

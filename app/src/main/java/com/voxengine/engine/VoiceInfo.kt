@@ -5,5 +5,8 @@ data class VoiceInfo(
     val name: String,
     val description: String,
     val type: VoiceType = VoiceType.PRESET,
-    val engineId: String = ""
+    val engineId: String = "",
+    val gender: String? = null,
+    val ageGroup: String? = null,
+    val tags: List<String> = emptyList()
 )

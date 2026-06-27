@@ -224,12 +224,15 @@ class MiMoEngine(
 
     override suspend fun getVoices(): List<EngineVoiceInfo> {
         val presetVoices = MiMoTTSClient.PRESET_VOICES.map {
+            val meta = MiMoTTSClient.PRESET_VOICE_META[it.name]
             EngineVoiceInfo(
                 id = it.id,
                 name = it.name,
                 description = it.description,
                 type = VoiceType.PRESET,
-                engineId = id
+                engineId = id,
+                gender = meta?.first,
+                ageGroup = meta?.second
             )
         }
 
@@ -246,7 +249,10 @@ class MiMoEngine(
                 name = item.name,
                 description = item.description.ifEmpty { if (type == VoiceType.CLONE) "克隆音色" else "设计音色" },
                 type = type,
-                engineId = id
+                engineId = id,
+                gender = item.gender,
+                ageGroup = item.ageGroup,
+                tags = com.voxengine.engine.VoiceTags.parse(item.tags)
             )
         }
 

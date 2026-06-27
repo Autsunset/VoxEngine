@@ -12,13 +12,13 @@ interface VoiceDao {
     @Query("SELECT * FROM voices ORDER BY createdAt DESC")
     fun getAllVoices(): Flow<List<VoiceEntity>>
 
-    @Query("SELECT id, name, type, model, description, engineId FROM voices ORDER BY createdAt DESC")
+    @Query("SELECT id, name, type, model, description, engineId, gender, ageGroup, tags FROM voices ORDER BY createdAt DESC")
     fun getAllVoiceItems(): Flow<List<VoiceListItem>>
 
-    @Query("SELECT id, name, type, model, description, engineId FROM voices WHERE type = :type ORDER BY createdAt DESC")
+    @Query("SELECT id, name, type, model, description, engineId, gender, ageGroup, tags FROM voices WHERE type = :type ORDER BY createdAt DESC")
     fun getVoiceItemsByType(type: String): Flow<List<VoiceListItem>>
 
-    @Query("SELECT id, name, type, model, description, engineId FROM voices WHERE engineId = :engineId ORDER BY createdAt DESC")
+    @Query("SELECT id, name, type, model, description, engineId, gender, ageGroup, tags FROM voices WHERE engineId = :engineId ORDER BY createdAt DESC")
     fun getVoiceItemsByEngine(engineId: String): Flow<List<VoiceListItem>>
 
     @Query("SELECT * FROM voices WHERE engineId = :engineId ORDER BY createdAt DESC")

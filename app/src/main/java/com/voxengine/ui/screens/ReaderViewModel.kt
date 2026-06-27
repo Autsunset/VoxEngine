@@ -76,12 +76,52 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settings.readerConservativeRequestIntervalMs.collect { v -> _uiState.update { it.copy(conservativeRequestIntervalMs = v) } } }
         viewModelScope.launch { settings.readerRetryCount.collect { v -> _uiState.update { it.copy(retryCount = v) } } }
         viewModelScope.launch { settings.readerRetryBaseDelayMs.collect { v -> _uiState.update { it.copy(retryBaseDelayMs = v) } } }
+        // 分角色朗读配置：持久值变化时同步到 UiState（草稿值，编辑后由 commit 持久化）。
+        viewModelScope.launch { settings.readerRoleEnabled.collect { v -> _uiState.update { it.copy(roleEnabled = v) } } }
+        viewModelScope.launch {
+            settings.readerNarrationVoice.collect { v ->
+                _uiState.update { it.copy(narrationVoice = v, narrationVoiceName = voiceDisplayName(v)) }
+            }
+        }
+        viewModelScope.launch {
+            settings.readerDialogueVoice.collect { v ->
+                _uiState.update { it.copy(dialogueVoice = v, dialogueVoiceName = voiceDisplayName(v)) }
+            }
+        }
+        viewModelScope.launch {
+            settings.readerCharacterVoicesJson.collect { json ->
+                _uiState.update { it.copy(characterVoices = parseCharacterVoices(json)) }
+            }
+        }
     }
+
+    /** 把音色 id/名称解析为展示名（与音色列表对齐）。空串→"默认（同主音色）"。 */
+    private fun voiceDisplayName(voiceId: String): String {
+        if (voiceId.isBlank()) return "默认（同主音色）"
+        return _uiState.value.voices.firstOrNull { it.id == voiceId || it.name == voiceId }?.name ?: voiceId
+    }
+
+    private fun parseCharacterVoices(json: String): Map<String, String> {
+        if (json.isBlank()) return emptyMap()
+        return runCatching {
+            val type = object : com.google.gson.reflect.TypeToken<Map<String, String>>() {}.type
+            com.google.gson.Gson().fromJson<Map<String, String>>(json, type) ?: emptyMap()
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun serializeCharacterVoices(map: Map<String, String>): String =
+        if (map.isEmpty()) "" else com.google.gson.Gson().toJson(map)
 
     private suspend fun onEngineChanged(engineId: String) {
         currentEngineId = engineId
         val loaded = runCatching { EngineRegistry.get(engineId)?.getVoices() }.getOrNull() ?: emptyList()
-        _uiState.update { it.copy(voices = loaded) }
+        _uiState.update {
+            it.copy(
+                voices = loaded,
+                narrationVoiceName = voiceDisplayName(it.narrationVoice),
+                dialogueVoiceName = voiceDisplayName(it.dialogueVoice)
+            )
+        }
         reconcileSelectedVoice()
         recomputeConfigured()
     }
@@ -379,6 +419,11 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
             putExtra(ReaderPlaybackService.EXTRA_CONSERVATIVE_REQUEST_INTERVAL_MS, state.conservativeRequestIntervalMs)
             putExtra(ReaderPlaybackService.EXTRA_RETRY_COUNT, state.retryCount)
             putExtra(ReaderPlaybackService.EXTRA_RETRY_BASE_DELAY_MS, state.retryBaseDelayMs)
+            // 分角色朗读配置透传给服务。未开启时服务忽略这些项，全书用主音色。
+            putExtra(ReaderPlaybackService.EXTRA_ROLE_ENABLED, state.roleEnabled)
+            putExtra(ReaderPlaybackService.EXTRA_NARRATION_VOICE, state.narrationVoice)
+            putExtra(ReaderPlaybackService.EXTRA_DIALOGUE_VOICE, state.dialogueVoice)
+            putExtra(ReaderPlaybackService.EXTRA_CHARACTER_VOICES_JSON, serializeCharacterVoices(state.characterVoices))
         }
         ContextCompat.startForegroundService(getApplication(), intent)
         _uiState.update {
@@ -457,6 +502,41 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settings.updateDefaultStyle(style.ifBlank { "无" }) }
     }
 
+    // ---- 分角色朗读 ----
+
+    fun onRoleEnabledChange(enabled: Boolean) {
+        _uiState.update { it.copy(roleEnabled = enabled) }
+        viewModelScope.launch { settings.updateReaderRoleEnabled(enabled) }
+    }
+
+    fun selectNarrationVoice(voice: VoiceInfo?) {
+        val id = voice?.id.orEmpty()
+        _uiState.update { it.copy(narrationVoice = id, narrationVoiceName = voice?.name ?: "默认（同主音色）") }
+        viewModelScope.launch { settings.updateReaderNarrationVoice(id) }
+    }
+
+    fun selectDialogueVoice(voice: VoiceInfo?) {
+        val id = voice?.id.orEmpty()
+        _uiState.update { it.copy(dialogueVoice = id, dialogueVoiceName = voice?.name ?: "默认（同主音色）") }
+        viewModelScope.launch { settings.updateReaderDialogueVoice(id) }
+    }
+
+    /** 新增/更新一个 角色名→音色 映射。 */
+    fun setCharacterVoice(name: String, voice: VoiceInfo?) {
+        if (name.isBlank()) return
+        val updated = _uiState.value.characterVoices.toMutableMap().apply {
+            if (voice == null) remove(name) else put(name, voice.id)
+        }
+        _uiState.update { it.copy(characterVoices = updated) }
+        viewModelScope.launch { settings.updateReaderCharacterVoicesJson(serializeCharacterVoices(updated)) }
+    }
+
+    fun removeCharacterVoice(name: String) {
+        val updated = _uiState.value.characterVoices.toMutableMap().apply { remove(name) }
+        _uiState.update { it.copy(characterVoices = updated) }
+        viewModelScope.launch { settings.updateReaderCharacterVoicesJson(serializeCharacterVoices(updated)) }
+    }
+
     fun onGapChange(value: Int) = _uiState.update { it.copy(readerGapMs = value.coerceIn(0, 3000)) }
     fun commitGap() = viewModelScope.launch { settings.updateReaderParagraphGapMs(_uiState.value.readerGapMs) }
 
@@ -509,6 +589,13 @@ data class ReaderUiState(
     val conservativeRequestIntervalMs: Int = 5000,
     val retryCount: Int = 3,
     val retryBaseDelayMs: Int = 2000,
+    // 分角色朗读：旁白/对话/具名角色分别选音色；characterVoices = 角色名→音色名。
+    val roleEnabled: Boolean = false,
+    val narrationVoice: String = "",
+    val narrationVoiceName: String = "",
+    val dialogueVoice: String = "",
+    val dialogueVoiceName: String = "",
+    val characterVoices: Map<String, String> = emptyMap(),
     val pageAnimationKey: Long = 0L,
     val pageAnimationForward: Boolean = true
 )

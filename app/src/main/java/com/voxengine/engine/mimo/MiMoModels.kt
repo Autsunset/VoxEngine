@@ -151,6 +151,22 @@ class MiMoTTSClient(
             VoiceInfo("Milo", "Milo", "英文男声", MODEL_PRESET),
             VoiceInfo("Dean", "Dean", "英文男声", MODEL_PRESET)
         )
+
+        /**
+         * 预设音色的性别/年龄段元数据（按 name 索引）。预设音色不入库，故用静态目录补元数据，
+         * 供分组展示与分角色路由使用。MiMo 上线新预设时这里补一条即可，缺失则视为"未分类"。
+         * 值为 [com.voxengine.engine.VoiceGender] / [com.voxengine.engine.VoiceAgeGroup] 常量。
+         */
+        val PRESET_VOICE_META: Map<String, Pair<String, String>> = mapOf(
+            "冰糖" to (com.voxengine.engine.VoiceGender.FEMALE to com.voxengine.engine.VoiceAgeGroup.YOUNG),
+            "茉莉" to (com.voxengine.engine.VoiceGender.FEMALE to com.voxengine.engine.VoiceAgeGroup.MIDDLE),
+            "苏打" to (com.voxengine.engine.VoiceGender.MALE to com.voxengine.engine.VoiceAgeGroup.YOUNG),
+            "白桦" to (com.voxengine.engine.VoiceGender.MALE to com.voxengine.engine.VoiceAgeGroup.MIDDLE),
+            "Mia" to (com.voxengine.engine.VoiceGender.FEMALE to com.voxengine.engine.VoiceAgeGroup.YOUNG),
+            "Chloe" to (com.voxengine.engine.VoiceGender.FEMALE to com.voxengine.engine.VoiceAgeGroup.YOUNG),
+            "Milo" to (com.voxengine.engine.VoiceGender.MALE to com.voxengine.engine.VoiceAgeGroup.YOUNG),
+            "Dean" to (com.voxengine.engine.VoiceGender.MALE to com.voxengine.engine.VoiceAgeGroup.MIDDLE)
+        )
     }
 }
 

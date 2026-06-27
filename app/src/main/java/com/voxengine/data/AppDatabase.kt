@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [VoiceEntity::class, SynthesisHistoryEntity::class, ReaderBookEntity::class, ReaderChapterEntity::class],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -65,6 +65,16 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // 音色元数据：性别 / 年龄段 / 标签 / 分组，均可空。用于分组管理与分角色路由。
+                addColumnIfMissing(db, "voices", "gender", "TEXT")
+                addColumnIfMissing(db, "voices", "ageGroup", "TEXT")
+                addColumnIfMissing(db, "voices", "tags", "TEXT")
+                addColumnIfMissing(db, "voices", "groupId", "TEXT")
+            }
+        }
+
         private fun addColumnIfMissing(
             db: SupportSQLiteDatabase,
             tableName: String,
@@ -97,7 +107,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "voxengine_tts_db"
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
                 INSTANCE = instance
                 instance
