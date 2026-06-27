@@ -29,7 +29,7 @@ object ReaderPlaybackPlanner {
         }
     ): List<Pair<ChunkKey, String>> = buildPrefetchWindowCore(
         chapters, currentPosition, startParagraphIndex, nextChapterPrefetchPageCount,
-        pageTargetLength, maxChunks, pagesForChapter, roleEnabled = false
+        pageTargetLength, maxChunks, pagesForChapter, roleEnabled = false, configuredNames = emptySet()
     ).map { (key, chunk) -> key to chunk.text }
 
     /** 角色感知版预取窗口：返回 [RoleChunk]，供听书服务按角色解析音色。 */
@@ -42,10 +42,11 @@ object ReaderPlaybackPlanner {
         maxChunks: Int = Int.MAX_VALUE,
         pagesForChapter: (Int) -> List<TxtPage> = { chapterIndex ->
             TxtNovelParser.paginate(chapters[chapterIndex].content, pageTargetLength)
-        }
+        },
+        configuredNames: Set<String> = emptySet()
     ): List<Pair<ChunkKey, RoleChunk>> = buildPrefetchWindowCore(
         chapters, currentPosition, startParagraphIndex, nextChapterPrefetchPageCount,
-        pageTargetLength, maxChunks, pagesForChapter, roleEnabled = true
+        pageTargetLength, maxChunks, pagesForChapter, roleEnabled = true, configuredNames = configuredNames
     )
 
     private fun buildPrefetchWindowCore(
@@ -56,7 +57,8 @@ object ReaderPlaybackPlanner {
         pageTargetLength: Int,
         maxChunks: Int,
         pagesForChapter: (Int) -> List<TxtPage>,
-        roleEnabled: Boolean
+        roleEnabled: Boolean,
+        configuredNames: Set<String> = emptySet()
     ): List<Pair<ChunkKey, RoleChunk>> {
         val window = buildList {
             val currentChapterPages = pagesForChapter(currentPosition.chapterIndex)
@@ -68,7 +70,8 @@ object ReaderPlaybackPlanner {
                         startParagraphIndex = if (pageIndex == currentPosition.pageIndex) startParagraphIndex else 0,
                         pageTargetLength = pageTargetLength,
                         pagesForChapter = pagesForChapter,
-                        roleEnabled = roleEnabled
+                        roleEnabled = roleEnabled,
+                        configuredNames = configuredNames
                     )
                 )
             }
@@ -90,7 +93,8 @@ object ReaderPlaybackPlanner {
                             startParagraphIndex = 0,
                             pageTargetLength = pageTargetLength,
                             pagesForChapter = pagesForChapter,
-                            roleEnabled = roleEnabled
+                            roleEnabled = roleEnabled,
+                            configuredNames = configuredNames
                         )
                     )
                 }
@@ -108,7 +112,7 @@ object ReaderPlaybackPlanner {
             TxtNovelParser.paginate(chapters[chapterIndex].content, pageTargetLength)
         }
     ): List<Pair<ChunkKey, String>> =
-        chunkKeysCore(chapters, position, startParagraphIndex, pageTargetLength, pagesForChapter, roleEnabled = false)
+        chunkKeysCore(chapters, position, startParagraphIndex, pageTargetLength, pagesForChapter, roleEnabled = false, configuredNames = emptySet())
             .map { (key, chunk) -> key to chunk.text }
 
     /** 角色感知版：每段先经 [RoleSegmenter.segment] 切旁白/对话，再按长度切分，片段携带角色。 */
@@ -119,9 +123,10 @@ object ReaderPlaybackPlanner {
         pageTargetLength: Int,
         pagesForChapter: (Int) -> List<TxtPage> = { chapterIndex ->
             TxtNovelParser.paginate(chapters[chapterIndex].content, pageTargetLength)
-        }
+        },
+        configuredNames: Set<String> = emptySet()
     ): List<Pair<ChunkKey, RoleChunk>> =
-        chunkKeysCore(chapters, position, startParagraphIndex, pageTargetLength, pagesForChapter, roleEnabled = true)
+        chunkKeysCore(chapters, position, startParagraphIndex, pageTargetLength, pagesForChapter, roleEnabled = true, configuredNames = configuredNames)
 
     private fun chunkKeysCore(
         chapters: List<TxtChapter>,
@@ -129,7 +134,8 @@ object ReaderPlaybackPlanner {
         startParagraphIndex: Int,
         pageTargetLength: Int,
         pagesForChapter: (Int) -> List<TxtPage>,
-        roleEnabled: Boolean
+        roleEnabled: Boolean,
+        configuredNames: Set<String> = emptySet()
     ): List<Pair<ChunkKey, RoleChunk>> {
         val page = pagesForChapter(position.chapterIndex).getOrNull(position.pageIndex)
             ?: return emptyList()
@@ -137,7 +143,7 @@ object ReaderPlaybackPlanner {
         return page.paragraphs.drop(startIndex).flatMapIndexed { offset, paragraph ->
             val paragraphIndex = startIndex + offset
             // 角色关闭：整段作为单个 NARRATION 片段 → splitTextForTts 行为与历史完全一致。
-            val spans = if (roleEnabled) RoleSegmenter.segment(paragraph)
+            val spans = if (roleEnabled) RoleSegmenter.segment(paragraph, configuredNames)
             else listOf(RoleSegment(SpeechRole.NARRATION, null, paragraph))
             val chunks = mutableListOf<Pair<ChunkKey, RoleChunk>>()
             var chunkIndex = 0

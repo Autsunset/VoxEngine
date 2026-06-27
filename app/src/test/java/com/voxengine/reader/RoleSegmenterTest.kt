@@ -42,7 +42,7 @@ class RoleSegmenterTest {
 
     @Test
     fun speakerExtractedFromNarrationPrefix() {
-        val segments = RoleSegmenter.segment("张三笑道：“你好。”")
+        val segments = RoleSegmenter.segment("张三笑道：“你好。”", setOf("张三"))
         val dialogue = segments.first { it.role == SpeechRole.DIALOGUE }
 
         assertEquals("张三", dialogue.character)
@@ -96,5 +96,52 @@ class RoleSegmenterTest {
         assertEquals("张三音", RoleSegmenter.voiceFor(named, "旁白音", "对话音", mapOf("张三" to "张三音"), "默认"))
         // 未配置对话音时回落到 fallback
         assertEquals("默认", RoleSegmenter.voiceFor(dialogue, "旁白音", null, emptyMap(), "默认"))
+    }
+
+
+
+    @Test
+    fun speakerReverseLookupFindsNameNotAdjacentToVerb() {
+        // “陈拾安听着也来了兴趣，扭头笑问道：” —— 正则可能误抓“扭头”，反查应命中“陈拾安”
+        val segments = RoleSegmenter.segment(
+            "陈拾安听着也来了兴趣，扭头笑问道：“婉音姐还有校服？”",
+            setOf("陈拾安", "婉音姐")
+        )
+        val dialogue = segments.first { it.role == SpeechRole.DIALOGUE }
+        assertEquals("陈拾安", dialogue.character)
+    }
+
+    @Test
+    fun speakerRegexMatchInConfiguredNamesIsPreferred() {
+        // 正则在旁白尾部精确匹配到“李四问道：” → 命中
+        val segments = RoleSegmenter.segment(
+            "李四问道：“来了啊。”",
+            setOf("李四", "王五")
+        )
+        val dialogue = segments.first { it.role == SpeechRole.DIALOGUE }
+        assertEquals("李四", dialogue.character)
+    }
+
+    @Test
+    fun speakerNotInConfiguredNamesReturnsNull() {
+        // 正则匹配到“张三”，但不在配置名集合中 → 返回 null
+        val segments = RoleSegmenter.segment(
+            "张三笑道：“你好。”",
+            setOf("李四")
+        )
+        val dialogue = segments.first { it.role == SpeechRole.DIALOGUE }
+        assertEquals(SpeechRole.DIALOGUE, dialogue.role)
+        org.junit.Assert.assertNull(dialogue.character)
+    }
+
+    @Test
+    fun speakerClosestConfiguredNameWinsWhenMultiplePresent() {
+        // 两个名字都出现，“王五”更靠后 → 应命中“王五”
+        val segments = RoleSegmenter.segment(
+            "张三在旁边听着，王五笑道：“说得好。”",
+            setOf("张三", "王五")
+        )
+        val dialogue = segments.first { it.role == SpeechRole.DIALOGUE }
+        assertEquals("王五", dialogue.character)
     }
 }

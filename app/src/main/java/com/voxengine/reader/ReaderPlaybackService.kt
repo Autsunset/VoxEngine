@@ -324,7 +324,8 @@ class ReaderPlaybackService : Service() {
                     nextChapterPrefetchPageCount = nextChapterPrefetchPageCount,
                     pageTargetLength = playbackState.pageTargetLength,
                     maxChunks = ReaderPlaybackPlanner.MAX_PREFETCH_AHEAD,
-                    pagesForChapter = pageProvider(chapters, playbackState)
+                    pagesForChapter = pageProvider(chapters, playbackState),
+                    configuredNames = playbackState.roleProfile.characters.keys
                 )
             } else {
                 ReaderPlaybackPlanner.buildPrefetchWindow(
@@ -390,7 +391,8 @@ class ReaderPlaybackService : Service() {
                 position = position,
                 startParagraphIndex = startParagraphIndex,
                 pageTargetLength = playbackState.pageTargetLength,
-                pagesForChapter = pageProvider(chapters, playbackState)
+                pagesForChapter = pageProvider(chapters, playbackState),
+                configuredNames = playbackState.roleProfile.characters.keys
             )
         } else {
             ReaderPlaybackPlanner.chunkKeysForPlayback(

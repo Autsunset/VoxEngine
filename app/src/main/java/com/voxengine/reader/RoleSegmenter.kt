@@ -41,8 +41,13 @@ object RoleSegmenter {
             "\\s*[：:]?\\s*$"
     )
 
-    /** 切分文本为有序角色片段。各片段 text 拼接等于 normalize 后的原文本（无损）。 */
-    fun segment(text: String): List<RoleSegment> {
+    /**
+     * 切分文本为有序角色片段。各片段 text 拼接等于 normalize 后的原文本（无损）。
+     *
+     * @param configuredNames 用户已配置的角色名集合。命中时对话片段带 [RoleSegment.character]，
+     *   用于路由到该角色音色。为空时不做名字识别（反正无处可路由）。
+     */
+    fun segment(text: String, configuredNames: Set<String> = emptySet()): List<RoleSegment> {
         val normalized = SpeechTextNormalizer.normalize(text)
         if (normalized.isEmpty()) return emptyList()
 
@@ -60,7 +65,7 @@ object RoleSegmenter {
         fun pushDialogue() {
             val s = buffer.toString().trim()
             buffer.clear()
-            if (s.isNotEmpty()) segments += RoleSegment(SpeechRole.DIALOGUE, extractSpeaker(lastNarration), s)
+            if (s.isNotEmpty()) segments += RoleSegment(SpeechRole.DIALOGUE, resolveSpeaker(lastNarration, configuredNames), s)
         }
 
         for (ch in normalized) {
@@ -86,11 +91,22 @@ object RoleSegmenter {
         return segments
     }
 
-    /** 从对话前的旁白尾部抽取说话人名；取最后一行的尾部以缩小匹配范围、降低误报。 */
-    private fun extractSpeaker(narration: String): String? {
-        if (narration.isBlank()) return null
-        val tail = narration.lineSequence().lastOrNull()?.takeLast(48) ?: return null
-        return SPEAKER_PATTERN.find(tail)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+    /**
+     * 解析对话前的说话人名。两步：
+     * 1. 正则精确匹配“名字+说类动词”（如“张三笑道：”），命中且在 [configuredNames] 中即采用——最准。
+     * 2. 否则反查：把每个已配置名字在旁白尾部里找最后出现位置，取离引号最近（最靠后）的命中。
+     *    这样“陈拾安听着也来了兴趣，扭头笑问道：”也能命中“陈拾安”（正则会误抓成“扭头”）。
+     * 多个名字同时出现时取最靠后的；无配置名字出现则返回 null（→ 对话默认音色）。
+     */
+    private fun resolveSpeaker(narration: String, configuredNames: Set<String>): String? {
+        if (narration.isBlank() || configuredNames.isEmpty()) return null
+        val tail = narration.lineSequence().lastOrNull()?.takeLast(64) ?: return null
+        val regexName = SPEAKER_PATTERN.find(tail)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+        if (regexName != null && regexName in configuredNames) return regexName
+        return configuredNames
+            .mapNotNull { name -> tail.lastIndexOf(name).takeIf { it >= 0 }?.let { it to name } }
+            .maxByOrNull { it.first }
+            ?.second
     }
 
     /** 给定片段与角色档，解析应使用的音色名；未配置则回落到 [fallback]。 */
