@@ -13,8 +13,8 @@ android {
         applicationId = "com.voxengine"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2606274
-        versionName = "2026.06.27.4"
+        versionCode = 2606275
+        versionName = "2026.06.27.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
