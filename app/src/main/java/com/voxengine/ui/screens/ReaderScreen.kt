@@ -42,6 +42,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
@@ -289,13 +290,13 @@ fun ReaderScreen(
                 onStyleChange = { viewModel.setStyle(it) },
                 roleEnabled = uiState.roleEnabled,
                 onRoleEnabledChange = { viewModel.onRoleEnabledChange(it) },
-                narrationVoiceName = uiState.narrationVoiceName,
-                onNarrationVoiceSelected = { viewModel.selectNarrationVoice(it) },
-                dialogueVoiceName = uiState.dialogueVoiceName,
-                onDialogueVoiceSelected = { viewModel.selectDialogueVoice(it) },
-                characterVoices = uiState.characterVoices,
-                onAddCharacterVoice = { name, voice -> viewModel.setCharacterVoice(name, voice) },
-                onRemoveCharacterVoice = { name -> viewModel.removeCharacterVoice(name) },
+                roleProfile = uiState.roleProfile,
+                onNarrationVoiceChange = { viewModel.setNarrationVoice(it) },
+                onNarrationStyleChange = { viewModel.setNarrationStyle(it) },
+                onDialogueVoiceChange = { viewModel.setDialogueVoice(it) },
+                onDialogueStyleChange = { viewModel.setDialogueStyle(it) },
+                onCharacterSave = { name, voice, style -> viewModel.saveCharacterVoice(name, voice, style) },
+                onCharacterRemove = { name -> viewModel.removeCharacterVoice(name) },
                 readerGapMs = uiState.readerGapMs,
                 readerSleepMinutes = uiState.readerSleepMinutes,
                 readerStopAfterChapters = uiState.readerStopAfterChapters,
@@ -721,13 +722,13 @@ private fun ReaderBottomMenu(
     onStyleChange: (String) -> Unit,
     roleEnabled: Boolean,
     onRoleEnabledChange: (Boolean) -> Unit,
-    narrationVoiceName: String,
-    onNarrationVoiceSelected: (com.voxengine.engine.VoiceInfo?) -> Unit,
-    dialogueVoiceName: String,
-    onDialogueVoiceSelected: (com.voxengine.engine.VoiceInfo?) -> Unit,
-    characterVoices: Map<String, String>,
-    onAddCharacterVoice: (String, com.voxengine.engine.VoiceInfo?) -> Unit,
-    onRemoveCharacterVoice: (String) -> Unit,
+    roleProfile: com.voxengine.reader.RoleProfile,
+    onNarrationVoiceChange: (com.voxengine.engine.VoiceInfo?) -> Unit,
+    onNarrationStyleChange: (String) -> Unit,
+    onDialogueVoiceChange: (com.voxengine.engine.VoiceInfo?) -> Unit,
+    onDialogueStyleChange: (String) -> Unit,
+    onCharacterSave: (String, String, String) -> Unit,
+    onCharacterRemove: (String) -> Unit,
     readerGapMs: Int,
     readerSleepMinutes: Int,
     readerStopAfterChapters: Int,
@@ -786,13 +787,13 @@ private fun ReaderBottomMenu(
                     onStyleChange = onStyleChange,
                     roleEnabled = roleEnabled,
                     onRoleEnabledChange = onRoleEnabledChange,
-                    narrationVoiceName = narrationVoiceName,
-                    onNarrationVoiceSelected = onNarrationVoiceSelected,
-                    dialogueVoiceName = dialogueVoiceName,
-                    onDialogueVoiceSelected = onDialogueVoiceSelected,
-                    characterVoices = characterVoices,
-                    onAddCharacterVoice = onAddCharacterVoice,
-                    onRemoveCharacterVoice = onRemoveCharacterVoice,
+                    roleProfile = roleProfile,
+                    onNarrationVoiceChange = onNarrationVoiceChange,
+                    onNarrationStyleChange = onNarrationStyleChange,
+                    onDialogueVoiceChange = onDialogueVoiceChange,
+                    onDialogueStyleChange = onDialogueStyleChange,
+                    onCharacterSave = onCharacterSave,
+                    onCharacterRemove = onCharacterRemove,
                     readerGapMs = readerGapMs,
                     readerSleepMinutes = readerSleepMinutes,
                     readerStopAfterChapters = readerStopAfterChapters,
@@ -994,13 +995,13 @@ private fun ReaderSettingsPanel(
     onStyleChange: (String) -> Unit,
     roleEnabled: Boolean,
     onRoleEnabledChange: (Boolean) -> Unit,
-    narrationVoiceName: String,
-    onNarrationVoiceSelected: (com.voxengine.engine.VoiceInfo?) -> Unit,
-    dialogueVoiceName: String,
-    onDialogueVoiceSelected: (com.voxengine.engine.VoiceInfo?) -> Unit,
-    characterVoices: Map<String, String>,
-    onAddCharacterVoice: (String, com.voxengine.engine.VoiceInfo?) -> Unit,
-    onRemoveCharacterVoice: (String) -> Unit,
+    roleProfile: com.voxengine.reader.RoleProfile,
+    onNarrationVoiceChange: (com.voxengine.engine.VoiceInfo?) -> Unit,
+    onNarrationStyleChange: (String) -> Unit,
+    onDialogueVoiceChange: (com.voxengine.engine.VoiceInfo?) -> Unit,
+    onDialogueStyleChange: (String) -> Unit,
+    onCharacterSave: (String, String, String) -> Unit,
+    onCharacterRemove: (String) -> Unit,
     readerGapMs: Int,
     readerSleepMinutes: Int,
     readerStopAfterChapters: Int,
@@ -1069,21 +1070,35 @@ private fun ReaderSettingsPanel(
         if (roleEnabled) {
             RoleVoicePicker(
                 label = "旁白音色",
-                selectedName = narrationVoiceName,
+                selectedName = roleProfile.narration.voice ?: "默认（同主音色）",
                 voices = voices,
-                onSelected = onNarrationVoiceSelected
+                onSelected = onNarrationVoiceChange
+            )
+            OutlinedTextField(
+                value = roleProfile.narration.style ?: "",
+                onValueChange = onNarrationStyleChange,
+                label = { Text("旁白风格（可选）") },
+                placeholder = { Text("留空用默认风格") },
+                modifier = Modifier.fillMaxWidth()
             )
             RoleVoicePicker(
                 label = "对话音色",
-                selectedName = dialogueVoiceName,
+                selectedName = roleProfile.dialogue.voice ?: "默认（同主音色）",
                 voices = voices,
-                onSelected = onDialogueVoiceSelected
+                onSelected = onDialogueVoiceChange
+            )
+            OutlinedTextField(
+                value = roleProfile.dialogue.style ?: "",
+                onValueChange = onDialogueStyleChange,
+                label = { Text("对话风格（可选）") },
+                placeholder = { Text("留空用默认风格") },
+                modifier = Modifier.fillMaxWidth()
             )
             CharacterVoiceEditor(
-                characterVoices = characterVoices,
+                roleProfile = roleProfile,
                 voices = voices,
-                onAdd = onAddCharacterVoice,
-                onRemove = onRemoveCharacterVoice
+                onSave = onCharacterSave,
+                onRemove = onCharacterRemove
             )
         }
         Text("段间间隔: ${readerGapMs}ms", style = MaterialTheme.typography.bodySmall)
@@ -1142,7 +1157,8 @@ private fun RoleVoicePicker(
     label: String,
     selectedName: String,
     voices: List<com.voxengine.engine.VoiceInfo>,
-    onSelected: (com.voxengine.engine.VoiceInfo?) -> Unit
+    onSelected: (com.voxengine.engine.VoiceInfo?) -> Unit,
+    allowDefault: Boolean = true
 ) {
     var expanded by remember { mutableStateOf(false) }
     ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
@@ -1155,10 +1171,12 @@ private fun RoleVoicePicker(
             modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable)
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            DropdownMenuItem(
-                text = { Text("默认（同主音色）") },
-                onClick = { onSelected(null); expanded = false }
-            )
+            if (allowDefault) {
+                DropdownMenuItem(
+                    text = { Text("默认（同主音色）") },
+                    onClick = { onSelected(null); expanded = false }
+                )
+            }
             voices.forEach { voice ->
                 DropdownMenuItem(
                     text = { Text("${voice.name} - ${voice.description}") },
@@ -1170,31 +1188,45 @@ private fun RoleVoicePicker(
 }
 
 /**
- * 角色名→音色 映射编辑器（Phase 3）。列出已配置角色，可删除；"添加角色"弹出对话框输入名字并选音色。
+ * 角色名→（音色+风格） 编辑器。列出已配置角色，每项可编辑（改音色/风格）或删除；底部"添加"弹对话框。
+ * 角色音色必填——这是修复"添加后不显示/无法删除"的关键：保存按钮仅在选中音色后可用。
  */
 @Composable
 private fun CharacterVoiceEditor(
-    characterVoices: Map<String, String>,
+    roleProfile: com.voxengine.reader.RoleProfile,
     voices: List<com.voxengine.engine.VoiceInfo>,
-    onAdd: (String, com.voxengine.engine.VoiceInfo?) -> Unit,
+    onSave: (name: String, voice: String, style: String) -> Unit,
     onRemove: (String) -> Unit
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<Pair<String, com.voxengine.reader.RoleVoiceStyle>?>(null) }
+
     Text("角色音色（按说话人）", style = MaterialTheme.typography.bodyMedium)
-    if (characterVoices.isEmpty()) {
+    if (roleProfile.characters.isEmpty()) {
         Text(
-            "尚未配置角色音色。对话中识别到这些名字时改用对应音色，未命中的对话仍用对话音色。",
+            "尚未配置角色音色。对话中识别到这些名字时改用对应音色与风格；未命中的对话仍用对话音色。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     } else {
-        characterVoices.forEach { (name, voiceId) ->
-            val voiceName = voices.firstOrNull { it.id == voiceId || it.name == voiceId }?.name ?: voiceId
+        roleProfile.characters.forEach { (name, vs) ->
+            val voiceName = voices.firstOrNull { it.id == vs.voice || it.name == vs.voice }?.name
+                ?: vs.voice ?: "默认"
+            val desc = buildString {
+                append("音色：$voiceName")
+                vs.style?.takeIf { it.isNotBlank() }?.let { append(" · 风格：$it") }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("$name → $voiceName", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(name, style = MaterialTheme.typography.bodyMedium)
+                    Text(desc, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClick = { editing = name to vs }) {
+                    Icon(Icons.Default.Edit, contentDescription = "编辑角色")
+                }
                 IconButton(onClick = { onRemove(name) }) {
                     Icon(Icons.Default.Delete, contentDescription = "删除角色")
                 }
@@ -1204,44 +1236,89 @@ private fun CharacterVoiceEditor(
     OutlinedButton(onClick = { showAddDialog = true }, modifier = Modifier.fillMaxWidth()) {
         Text("+ 添加角色音色")
     }
+
     if (showAddDialog) {
-        var name by remember { mutableStateOf("") }
-        var selectedVoice by remember { mutableStateOf<com.voxengine.engine.VoiceInfo?>(null) }
-        AlertDialog(
-            onDismissRequest = { showAddDialog = false },
-            title = { Text("添加角色音色") },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text("角色名（如：张三）") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    RoleVoicePicker(
-                        label = "该角色音色",
-                        selectedName = selectedVoice?.name ?: "默认（同主音色）",
-                        voices = voices,
-                        onSelected = { selectedVoice = it }
-                    )
-                    Text(
-                        "提示：朗读时从对话前的「XX说：」自动识别角色名，匹配则用此音色。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = name.isNotBlank(),
-                    onClick = {
-                        onAdd(name.trim(), selectedVoice)
-                        showAddDialog = false
-                    }
-                ) { Text("添加") }
-            },
-            dismissButton = { TextButton(onClick = { showAddDialog = false }) { Text("取消") } }
+        CharacterVoiceDialog(
+            title = "添加角色音色",
+            initialName = "",
+            initialVoice = null,
+            initialStyle = "",
+            voices = voices,
+            onConfirm = { name, voice, style -> onSave(name, voice, style); showAddDialog = false },
+            onDismiss = { showAddDialog = false }
         )
     }
+    editing?.let { (name, vs) ->
+        CharacterVoiceDialog(
+            title = "编辑角色：$name",
+            initialName = name,
+            initialVoice = vs.voice,
+            initialStyle = vs.style ?: "",
+            voices = voices,
+            onConfirm = { _, voice, style -> onSave(name, voice, style); editing = null },
+            onDismiss = { editing = null }
+        )
+    }
+}
+
+/** 添加/编辑角色共用对话框。name 编辑时不可改（它是 map key）；音色必填、风格可选。 */
+@Composable
+private fun CharacterVoiceDialog(
+    title: String,
+    initialName: String,
+    initialVoice: String?,
+    initialStyle: String,
+    voices: List<com.voxengine.engine.VoiceInfo>,
+    onConfirm: (name: String, voice: String, style: String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val adding = initialName.isBlank()
+    var name by remember { mutableStateOf(initialName) }
+    var selectedVoice by remember {
+        mutableStateOf(voices.firstOrNull { it.id == initialVoice || it.name == initialVoice })
+    }
+    var style by remember { mutableStateOf(initialStyle) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("角色名（如：张三）") },
+                    enabled = adding,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                RoleVoicePicker(
+                    label = "音色",
+                    selectedName = selectedVoice?.name ?: "请选择音色",
+                    voices = voices,
+                    onSelected = { selectedVoice = it },
+                    allowDefault = false
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = style,
+                    onValueChange = { style = it },
+                    label = { Text("风格（可选）") },
+                    placeholder = { Text("留空用默认风格") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    "提示：朗读时从对话前的「XX说：」识别角色名，匹配则用此音色与风格。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = name.isNotBlank() && selectedVoice != null,
+                onClick = { onConfirm(name.trim(), selectedVoice!!.id, style) }
+            ) { Text(if (adding) "添加" else "保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
 }

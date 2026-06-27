@@ -32,11 +32,9 @@ class SettingsRepository(private val context: Context) {
     val readerConservativeRequestIntervalMs: Flow<Int> = context.dataStore.data.map { it[KEY_READER_CONSERVATIVE_REQUEST_INTERVAL_MS] ?: 5000 }
     val readerRetryCount: Flow<Int> = context.dataStore.data.map { it[KEY_READER_RETRY_COUNT] ?: 3 }
     val readerRetryBaseDelayMs: Flow<Int> = context.dataStore.data.map { it[KEY_READER_RETRY_BASE_DELAY_MS] ?: 2000 }
-    // 分角色朗读：旁白 / 对话 / 具名角色分别用不同音色。角色→音色映射以 JSON 字符串持久化。
+    // 分角色朗读档：旁白 / 对话 / 具名角色各自的音色与可选风格，整体序列化为 RoleProfile JSON。
     val readerRoleEnabled: Flow<Boolean> = context.dataStore.data.map { it[KEY_READER_ROLE_ENABLED] ?: false }
-    val readerNarrationVoice: Flow<String> = context.dataStore.data.map { it[KEY_READER_NARRATION_VOICE] ?: "" }
-    val readerDialogueVoice: Flow<String> = context.dataStore.data.map { it[KEY_READER_DIALOGUE_VOICE] ?: "" }
-    val readerCharacterVoicesJson: Flow<String> = context.dataStore.data.map { it[KEY_READER_CHARACTER_VOICES_JSON] ?: "" }
+    val readerRoleProfileJson: Flow<String> = context.dataStore.data.map { it[KEY_READER_ROLE_PROFILE_JSON] ?: "" }
 
     suspend fun updateBaseUrl(url: String) { context.dataStore.edit { it[KEY_BASE_URL] = url } }
     suspend fun updateApiKey(key: String) { context.dataStore.edit { it[KEY_API_KEY] = key } }
@@ -69,9 +67,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun updateReaderRetryCount(count: Int) { context.dataStore.edit { it[KEY_READER_RETRY_COUNT] = count } }
     suspend fun updateReaderRetryBaseDelayMs(delayMs: Int) { context.dataStore.edit { it[KEY_READER_RETRY_BASE_DELAY_MS] = delayMs } }
     suspend fun updateReaderRoleEnabled(enabled: Boolean) { context.dataStore.edit { it[KEY_READER_ROLE_ENABLED] = enabled } }
-    suspend fun updateReaderNarrationVoice(voice: String) { context.dataStore.edit { it[KEY_READER_NARRATION_VOICE] = voice } }
-    suspend fun updateReaderDialogueVoice(voice: String) { context.dataStore.edit { it[KEY_READER_DIALOGUE_VOICE] = voice } }
-    suspend fun updateReaderCharacterVoicesJson(json: String) { context.dataStore.edit { it[KEY_READER_CHARACTER_VOICES_JSON] = json } }
+    suspend fun updateReaderRoleProfileJson(json: String) { context.dataStore.edit { it[KEY_READER_ROLE_PROFILE_JSON] = json } }
 
     fun getEngineConfig(engineId: String, key: String): Flow<String> {
         val configKey = stringPreferencesKey("${engineId}_$key")
@@ -101,9 +97,7 @@ class SettingsRepository(private val context: Context) {
         private val KEY_READER_RETRY_COUNT = intPreferencesKey("reader_retry_count")
         private val KEY_READER_RETRY_BASE_DELAY_MS = intPreferencesKey("reader_retry_base_delay_ms")
         private val KEY_READER_ROLE_ENABLED = booleanPreferencesKey("reader_role_enabled")
-        private val KEY_READER_NARRATION_VOICE = stringPreferencesKey("reader_narration_voice")
-        private val KEY_READER_DIALOGUE_VOICE = stringPreferencesKey("reader_dialogue_voice")
-        private val KEY_READER_CHARACTER_VOICES_JSON = stringPreferencesKey("reader_character_voices_json")
+        private val KEY_READER_ROLE_PROFILE_JSON = stringPreferencesKey("reader_role_profile_json")
 
         private const val NIGHT_MODE_MIRROR_PREFS = "night_mode_mirror"
         private const val KEY_DARK_MODE_MIRROR = "dark_mode"
