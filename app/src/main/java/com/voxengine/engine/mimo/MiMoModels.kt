@@ -3,7 +3,10 @@ package com.voxengine.engine.mimo
 import android.util.Base64
 import android.util.Log
 import com.google.gson.Gson
-import com.google.gson.annotations.SerializedName
+import com.voxengine.engine.mimo.model.AudioConfig
+import com.voxengine.engine.mimo.model.Message
+import com.voxengine.engine.mimo.model.TTSRequest
+import com.voxengine.engine.mimo.model.TTSResponse
 import com.voxengine.util.LogManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -97,18 +100,19 @@ class MiMoTTSClient(
             .post(json.toRequestBody("application/json".toMediaType()))
             .build()
 
-        val response = client.newCall(httpRequest).execute()
-        val body = response.body?.string() ?: throw Exception("Empty response")
-
-        if (!response.isSuccessful) {
-            val message = "API error ${response.code}: $body"
-            // 429 限流与 5xx 服务端错误是瞬时的，抛 IOException 让 RetryPolicy 退避重试；
-            // 其余 4xx（鉴权/参数错误）不可重试，抛普通异常避免空转。
-            if (response.code == 429 || response.code in 500..599) throw IOException(message)
-            throw Exception(message)
+        val ttsResponse = client.newCall(httpRequest).execute().use { response ->
+            val responseBody = response.body ?: throw Exception("Empty response")
+            if (!response.isSuccessful) {
+                val message = "API error ${response.code}: ${responseBody.string()}"
+                // 429 限流与 5xx 服务端错误是瞬时的，抛 IOException 让 RetryPolicy 退避重试；
+                // 其余 4xx（鉴权/参数错误）不可重试，抛普通异常避免空转。
+                if (response.code == 429 || response.code in 500..599) throw IOException(message)
+                throw Exception(message)
+            }
+            // 成功分支流式解析：响应 JSON 内嵌 base64 音频，先 string() 会平白多一份完整拷贝
+            gson.fromJson(responseBody.charStream(), TTSResponse::class.java)
+                ?: throw Exception("Empty response")
         }
-
-        val ttsResponse = gson.fromJson(body, TTSResponse::class.java)
         val audioBase64 = ttsResponse.choices.firstOrNull()?.message?.audio?.data
             ?: throw Exception("No audio data in response")
 
@@ -169,38 +173,3 @@ class MiMoTTSClient(
         )
     }
 }
-
-data class TTSRequest(
-    val model: String,
-    val stream: Boolean = false,
-    val messages: List<Message>,
-    val audio: AudioConfig
-)
-
-data class Message(
-    val role: String,
-    val content: String
-)
-
-data class AudioConfig(
-    val format: String = "wav",
-    val voice: String? = null,
-    @SerializedName("optimize_text_preview")
-    val optimizeTextPreview: Boolean? = null
-)
-
-data class TTSResponse(
-    val choices: List<Choice>
-)
-
-data class Choice(
-    val message: ResponseMessage
-)
-
-data class ResponseMessage(
-    val audio: AudioData?
-)
-
-data class AudioData(
-    val data: String
-)

@@ -54,24 +54,21 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.voxengine.audio.AudioUtils
-import com.voxengine.data.AppDatabase
 import com.voxengine.data.VoiceEntity
-import com.voxengine.engine.mimo.MiMoTTSClient
 import com.voxengine.engine.EngineRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -80,23 +77,19 @@ import kotlinx.coroutines.withContext
 fun VoiceManageScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val db = remember { AppDatabase.getDatabase(context) }
-    val settings = remember { com.voxengine.data.SettingsRepository(context) }
-    val currentEngineId by settings.currentEngine.collectAsState(initial = "mimo")
-
-    val activeEngine = EngineRegistry.get(currentEngineId)
-    val voices by db.voiceDao().getVoiceItemsByEngine(currentEngineId).collectAsState(initial = emptyList())
-    val presetVoices by produceState(initialValue = emptyList(), activeEngine) {
-        value = activeEngine?.getVoices() ?: emptyList()
-    }
+    val viewModel: VoiceManageViewModel = viewModel()
+    val currentEngineId by viewModel.currentEngineId.collectAsState()
+    val voices by viewModel.voices.collectAsState()
+    val presetVoices by viewModel.presetVoices.collectAsState()
+    val supportsClone by viewModel.supportsClone.collectAsState()
+    val supportsDesign by viewModel.supportsDesign.collectAsState()
+    val previewingVoice by viewModel.previewingVoice.collectAsState()
+    val isPlaying by viewModel.isPlaying.collectAsState()
+    val activeEngineName = EngineRegistry.get(currentEngineId)?.name ?: currentEngineId
 
     var showAddDialog by remember { mutableStateOf(false) }
     var showDesignDialog by remember { mutableStateOf(false) }
     var editingVoice by remember { mutableStateOf<com.voxengine.data.VoiceListItem?>(null) }
-    var previewingVoice by remember { mutableStateOf<String?>(null) }
-    var isPlaying by remember { mutableStateOf(false) }
-    val supportsClone = activeEngine?.supportsVoiceClone ?: false
-    val supportsDesign = activeEngine?.supportsVoiceDesign ?: false
 
     // 导出音色配置
     val exportLauncher = rememberLauncherForActivityResult(
@@ -104,7 +97,7 @@ fun VoiceManageScreen() {
     ) { uri ->
         uri?.let {
             scope.launch {
-                val allVoices = db.voiceDao().getAllVoices().first()
+                val allVoices = viewModel.voicesForExport()
                 val json = Gson().toJson(allVoices)
                 context.contentResolver.openOutputStream(it)?.use { os ->
                     os.write(json.toByteArray())
@@ -123,15 +116,8 @@ fun VoiceManageScreen() {
                 try {
                     val json = context.contentResolver.openInputStream(it)?.bufferedReader()?.readText()
                     val type = object : TypeToken<List<VoiceEntity>>() {}.type
-                    val voices: List<VoiceEntity> = Gson().fromJson(json, type)
-                    var count = 0
-                    for (voice in voices) {
-                        val existing = db.voiceDao().getVoiceByEngineAndName(voice.engineId, voice.name)
-                        if (existing == null) {
-                            db.voiceDao().insert(voice.copy(id = 0))
-                            count++
-                        }
-                    }
+                    val parsed: List<VoiceEntity> = Gson().fromJson(json, type)
+                    val count = viewModel.importVoices(parsed)
                     Toast.makeText(context, "导入完成，新增 $count 个音色", Toast.LENGTH_SHORT).show()
                 } catch (e: Exception) {
                     Toast.makeText(context, "导入失败: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -141,7 +127,7 @@ fun VoiceManageScreen() {
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("音色管理 - ${activeEngine?.name ?: currentEngineId}") }) }
+        topBar = { TopAppBar(title = { Text("音色管理 - $activeEngineName") }) }
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
@@ -181,24 +167,7 @@ fun VoiceManageScreen() {
                             VoiceMetaLine(gender = voice.gender, ageGroup = voice.ageGroup, tags = voice.tags)
                         }
                         IconButton(
-                            onClick = {
-                                scope.launch {
-                                    previewingVoice = voice.name
-                                    isPlaying = true
-                                    try {
-                                        val engine = EngineRegistry.getActive(currentEngineId)
-                                        val result = withContext(Dispatchers.IO) {
-                                            engine.synthesize("你好，我是${voice.name}，这是试听。", voice.name)
-                                        }
-                                        playAudio(result.audioData)
-                                    } catch (e: Exception) {
-                                        // ignore
-                                    } finally {
-                                        isPlaying = false
-                                        previewingVoice = null
-                                    }
-                                }
-                            },
+                            onClick = { viewModel.previewVoice(voice.name, "你好，我是${voice.name}，这是试听。") },
                             enabled = !isPlaying
                         ) {
                             if (previewingVoice == voice.name && isPlaying) {
@@ -256,24 +225,7 @@ fun VoiceManageScreen() {
                                         )
                                     }
                                     IconButton(
-                                        onClick = {
-                                            scope.launch {
-                                                previewingVoice = voice.name
-                                                isPlaying = true
-                                                try {
-                                                    val engine = EngineRegistry.getActive(currentEngineId)
-                                                    val result = withContext(Dispatchers.IO) {
-                                                        engine.synthesize("你好，这是试听。", voice.name)
-                                                    }
-                                                    playAudio(result.audioData)
-                                                } catch (e: Exception) {
-                                                    // ignore
-                                                } finally {
-                                                    isPlaying = false
-                                                    previewingVoice = null
-                                                }
-                                            }
-                                        },
+                                        onClick = { viewModel.previewVoice(voice.name, "你好，这是试听。") },
                                         enabled = !isPlaying
                                     ) {
                                         if (previewingVoice == voice.name && isPlaying) {
@@ -285,9 +237,7 @@ fun VoiceManageScreen() {
                                     IconButton(onClick = { editingVoice = voice }) {
                                         Icon(Icons.Default.Edit, "编辑标签")
                                     }
-                                    IconButton(onClick = {
-                                        scope.launch { db.voiceDao().deleteById(voice.id) }
-                                    }) {
+                                    IconButton(onClick = { viewModel.deleteVoice(voice.id) }) {
                                         Icon(Icons.Default.Delete, "删除")
                                     }
                                 }
@@ -330,20 +280,8 @@ fun VoiceManageScreen() {
         CloneVoiceDialog(
             onDismiss = { showAddDialog = false },
             onSave = { name, description, audioBase64 ->
-                scope.launch {
-                    db.voiceDao().insert(
-                        VoiceEntity(
-                            name = name,
-                            type = "clone",
-                            model = MiMoTTSClient.MODEL_CLONE,
-                            voiceParam = "data:audio/wav;base64,$audioBase64",
-                            description = description,
-                            audioBase64 = audioBase64,
-                            engineId = currentEngineId
-                        )
-                    )
-                    showAddDialog = false
-                }
+                viewModel.saveCloneVoice(name, description, audioBase64)
+                showAddDialog = false
             }
         )
     }
@@ -352,19 +290,8 @@ fun VoiceManageScreen() {
         DesignVoiceDialog(
             onDismiss = { showDesignDialog = false },
             onSave = { name, description ->
-                scope.launch {
-                    db.voiceDao().insert(
-                        VoiceEntity(
-                            name = name,
-                            type = "design",
-                            model = MiMoTTSClient.MODEL_DESIGN,
-                            voiceParam = description,
-                            description = description,
-                            engineId = currentEngineId
-                        )
-                    )
-                    showDesignDialog = false
-                }
+                viewModel.saveDesignVoice(name, description)
+                showDesignDialog = false
             }
         )
     }
@@ -374,13 +301,8 @@ fun VoiceManageScreen() {
             voice = voice,
             onDismiss = { editingVoice = null },
             onSave = { gender, ageGroup, tags ->
-                scope.launch {
-                    val entity = db.voiceDao().getVoiceById(voice.id)
-                    if (entity != null) {
-                        db.voiceDao().update(entity.copy(gender = gender, ageGroup = ageGroup, tags = tags))
-                    }
-                    editingVoice = null
-                }
+                viewModel.saveVoiceMeta(voice, gender, ageGroup, tags)
+                editingVoice = null
             }
         )
     }

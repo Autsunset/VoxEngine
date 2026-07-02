@@ -76,3 +76,6 @@ Thumbs.db
 /MiMoTTS-*.apk
 *.jks
 voxengine.jks
+
+# Tool state
+.sisyphus/

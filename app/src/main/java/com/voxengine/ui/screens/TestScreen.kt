@@ -102,7 +102,11 @@ fun TestScreen() {
     // 播放协程 Job
     var playJob by remember { mutableStateOf<Job?>(null) }
 
-    val isConfigured = activeEngine?.isConfigured() ?: false
+    // isConfigured 可能阻塞读 DataStore（MiMoEngine 内部 runBlocking），不能在组合期主线程同步调用；
+    // 放到 IO 线程异步求值，并随 apiKey 变化重算。初值取 true 避免未配置提示闪现。
+    val isConfigured by produceState(initialValue = true, activeEngine, apiKey) {
+        value = withContext(Dispatchers.IO) { activeEngine?.isConfigured() ?: false }
+    }
 
     // 离开页面时停止播放
     DisposableEffect(Unit) {

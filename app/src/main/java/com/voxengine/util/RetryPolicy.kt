@@ -5,13 +5,14 @@ import kotlinx.coroutines.delay
 import java.io.IOException
 
 /**
- * 对可重试的合成错误（限流 429 / 网络 IOException）做指数退避重试。
+ * 对可重试的合成错误（网络 IOException）做指数退避重试。
  * CancellationException 直接抛出，不重试。
+ * 注：429/5xx 已由 MiMoTTSClient 规范为 IOException（见 MiMoModels.kt），
+ * 故此处不再用 message contains "429" 字符串匹配（会误命中任何含 429 的消息，如字节数）。
  */
 object RetryPolicy {
 
-    fun isRetryable(error: Throwable): Boolean =
-        error.message?.contains("429") == true || error is IOException
+    fun isRetryable(error: Throwable): Boolean = error is IOException
 
     /**
      * @param retryCount 重试次数（总尝试 = 1 + retryCount）

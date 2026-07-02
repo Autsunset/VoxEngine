@@ -1,6 +1,7 @@
 # Keep MiMo Gson request/response models stable under R8. Gson reflects class
 # structure and generic signatures when parsing API responses.
--keep class com.voxengine.engine.mimo.** { *; }
+# 模型集中在 mimo/model 子包，引擎逻辑代码（MiMoEngine/MiMoTTSClient）仍受 R8 优化。
+-keep class com.voxengine.engine.mimo.model.** { *; }
 -keepattributes Signature,*Annotation*
 
 # RoleProfile / RoleVoiceStyle are reflected by Gson for the reader role-config

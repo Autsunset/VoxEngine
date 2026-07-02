@@ -2,11 +2,15 @@ package com.voxengine.util
 
 import android.content.Context
 import android.util.Log
+import java.io.BufferedWriter
 import java.io.File
+import java.io.FileWriter
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 object LogManager {
     private const val TAG = "LogManager"
@@ -17,9 +21,22 @@ object LogManager {
     private const val MAX_LOG_LINE_LENGTH = 3000
     private const val BASE64_PREVIEW_CHARS = 16
 
-    private var logFile: File? = null
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-    private val timeFormat = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.getDefault())
+    // 所有落盘操作串行到这个后台线程：appendLog 在调用方线程（常为主线程）只投递，
+    // 不做文件 IO 与脱敏正则；写线程持有常开的 BufferedWriter，按日期滚动。
+    private val writeExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "VoxLogWriter").apply { isDaemon = true }
+    }
+
+    @Volatile private var logDir: File? = null
+
+    // 仅在 writeExecutor 线程上读写
+    private var writer: BufferedWriter? = null
+    private var writerDate: String? = null
+
+    // SimpleDateFormat 非线程安全：写线程 format 与读路径 parse 并发，用 ThreadLocal 隔离。
+    private val dateFormat = ThreadLocal.withInitial { SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()) }
+    private val timeFormat = ThreadLocal.withInitial { SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.getDefault()) }
+
     private val lineRegex = Regex("""^(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d{3}) ([A-Z])/([^:]+): (.*)$""")
     private val dataAudioRegex = Regex("""data:audio/[\w.+-]+;base64,[A-Za-z0-9+/=]+""")
     private val base64BlobRegex = Regex("""(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{180,}={0,2}(?![A-Za-z0-9+/])""")
@@ -43,41 +60,68 @@ object LogManager {
     )
 
     fun init(context: Context) {
-        val logDir = File(context.filesDir, LOG_DIR)
-        if (!logDir.exists()) logDir.mkdirs()
-
-        val cutoff = System.currentTimeMillis() - MAX_DAYS * 24 * 60 * 60 * 1000L
-        logDir.listFiles()?.forEach { file ->
-            if (file.name.endsWith(LOG_EXT)) {
-                val name = file.nameWithoutExtension.removePrefix(LOG_PREFIX)
-                try {
-                    val fileDate = dateFormat.parse(name)
-                    if (fileDate != null && fileDate.time < cutoff) {
-                        file.delete()
-                        Log.d(TAG, "Deleted old log: ${file.name}")
-                    }
-                } catch (_: Exception) {}
+        val dir = File(context.filesDir, LOG_DIR)
+        logDir = dir
+        writeExecutor.execute {
+            if (!dir.exists()) dir.mkdirs()
+            val cutoff = System.currentTimeMillis() - MAX_DAYS * 24 * 60 * 60 * 1000L
+            dir.listFiles()?.forEach { file ->
+                if (file.name.endsWith(LOG_EXT)) {
+                    val name = file.nameWithoutExtension.removePrefix(LOG_PREFIX)
+                    try {
+                        val fileDate = dateFormat.get()!!.parse(name)
+                        if (fileDate != null && fileDate.time < cutoff) {
+                            file.delete()
+                            Log.d(TAG, "Deleted old log: ${file.name}")
+                        }
+                    } catch (_: Exception) {}
+                }
             }
+            closeWriter()
         }
-
-        val today = dateFormat.format(Date())
-        logFile = File(logDir, "$LOG_PREFIX$today$LOG_EXT")
     }
 
-    @Synchronized
     fun appendLog(level: String, tag: String, message: String) {
-        val file = logFile ?: return
-        val timestamp = timeFormat.format(Date())
-        val safeMessage = sanitizeMessage(message)
-        val line = "$timestamp $level/$tag: $safeMessage\n"
+        val dir = logDir ?: return
+        val timestampMs = System.currentTimeMillis()
+        writeExecutor.execute { writeLine(dir, timestampMs, level, tag, message) }
+    }
+
+    /** 仅在 writeExecutor 线程调用。 */
+    private fun writeLine(dir: File, timestampMs: Long, level: String, tag: String, message: String) {
         try {
-            file.appendText(line)
+            val date = dateFormat.get()!!.format(Date(timestampMs))
+            if (writer == null || writerDate != date) {
+                closeWriter()
+                if (!dir.exists()) dir.mkdirs()
+                writer = BufferedWriter(FileWriter(File(dir, "$LOG_PREFIX$date$LOG_EXT"), true))
+                writerDate = date
+            }
+            val time = timeFormat.get()!!.format(Date(timestampMs))
+            writer?.apply {
+                write("$time $level/$tag: ${sanitizeMessage(message)}\n")
+                // 每行落盘：日志正是崩溃排查用，缓冲丢尾不可接受
+                flush()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to write log: ${e.message}")
         }
     }
 
+    /** 仅在 writeExecutor 线程调用。 */
+    private fun closeWriter() {
+        runCatching { writer?.close() }
+        writer = null
+        writerDate = null
+    }
+
+    /** 等待已投递的写入全部落盘（读取/导出/清理前的屏障）。 */
+    private fun awaitPendingWrites() {
+        runCatching { writeExecutor.submit {}.get(2, TimeUnit.SECONDS) }
+    }
+
     fun getAvailableDates(context: Context): List<String> {
+        awaitPendingWrites()
         val logDir = File(context.filesDir, LOG_DIR)
         if (!logDir.exists()) return emptyList()
         return logDir.listFiles()
@@ -88,6 +132,7 @@ object LogManager {
     }
 
     fun readEntries(context: Context, filter: LogFilter = LogFilter()): List<LogEntry> {
+        awaitPendingWrites()
         val dates = filter.date?.let(::listOf) ?: getAvailableDates(context)
         val keyword = filter.keyword.trim()
         return dates.asSequence()
@@ -109,10 +154,16 @@ object LogManager {
     }
 
     fun clearLogs(context: Context) {
-        val logDir = File(context.filesDir, LOG_DIR)
-        logDir.listFiles()?.forEach { it.delete() }
-        logFile = null
-        init(context)
+        val dir = File(context.filesDir, LOG_DIR)
+        logDir = dir
+        // 在写线程上执行删除，避免与在飞写入交错（否则写句柄可能指向已删除文件）
+        runCatching {
+            writeExecutor.submit {
+                closeWriter()
+                dir.listFiles()?.forEach { it.delete() }
+                if (!dir.exists()) dir.mkdirs()
+            }.get(5, TimeUnit.SECONDS)
+        }
     }
 
     fun exportLog(context: Context): File? = exportEntries(context, readEntries(context), "voxengine_full_log.txt")
@@ -136,7 +187,7 @@ object LogManager {
         val match = lineRegex.matchEntire(line) ?: run {
             val safeLine = sanitizeMessage(line)
             return LogEntry(
-                timestamp = dateFormat.parse(date)?.time ?: 0L,
+                timestamp = dateFormat.get()!!.parse(date)?.time ?: 0L,
                 date = date,
                 time = "00:00:00.000",
                 level = "I",

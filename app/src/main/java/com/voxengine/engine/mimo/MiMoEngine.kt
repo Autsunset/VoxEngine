@@ -69,29 +69,8 @@ class MiMoEngine(
         }
     }
 
-    private fun splitTextToSentences(text: String): List<String> {
-        // 按中文句末标点分段，保留引号和内容在一起
-        val normalizedText = SpeechTextNormalizer.normalize(text)
-        val sentences = mutableListOf<String>()
-        val sb = StringBuilder()
-        for (ch in normalizedText) {
-            sb.append(ch)
-            if (ch in charArrayOf('。', '！', '？', '；', '!', '?', ';', '\n')) {
-                val s = sb.toString().trim()
-                // 跳过只有引号等符号的空段
-                if (s.isNotEmpty() && s.any { it.isLetterOrDigit() }) {
-                    sentences.add(s)
-                }
-                sb.clear()
-            }
-        }
-        val remaining = sb.toString().trim()
-        // 剩余部分也要检查是否有实际内容
-        if (remaining.isNotEmpty() && remaining.any { it.isLetterOrDigit() }) {
-            sentences.add(remaining)
-        }
-        return if (sentences.isEmpty()) listOf(normalizedText) else sentences
-    }
+    private fun splitTextToSentences(text: String): List<String> =
+        SpeechTextNormalizer.splitSentences(text)
 
     /**
      * 流式合成：分句后用有界并发预取，按原始顺序就绪即回调该句 PCM。
@@ -283,6 +262,10 @@ class MiMoEngine(
         )
     }
 
+    /**
+     * 内部 runBlocking 读 DataStore——只应在后台/binder 线程调用（如系统 TTS 服务），
+     * 勿在主线程或 Compose 组合期同步调用；UI 侧请异步求值（见 TestScreen / ReaderViewModel 做法）。
+     */
     override fun isConfigured(): Boolean {
         return runCatching {
             kotlinx.coroutines.runBlocking {

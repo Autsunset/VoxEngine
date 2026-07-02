@@ -152,9 +152,9 @@ class VoxEngineTTSService : TextToSpeechService() {
         var errorCount = 0
         while (offset < pcmData.size) {
             if (stopRequested) return false
-            val end = minOf(offset + chunkSize, pcmData.size)
-            val chunk = pcmData.copyOfRange(offset, end)
-            val res = callback.audioAvailable(chunk, 0, chunk.size)
+            val length = minOf(chunkSize, pcmData.size - offset)
+            // audioAvailable 支持 offset/length，直接切片传入，避免每块 copyOfRange 分配
+            val res = callback.audioAvailable(pcmData, offset, length)
             if (res == TextToSpeech.ERROR) {
                 errorCount++
                 if (errorCount > 3) {
@@ -164,7 +164,7 @@ class VoxEngineTTSService : TextToSpeechService() {
             } else {
                 errorCount = 0
             }
-            offset = end
+            offset += length
         }
         return true
     }

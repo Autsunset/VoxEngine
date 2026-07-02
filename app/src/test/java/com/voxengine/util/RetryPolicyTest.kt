@@ -66,4 +66,20 @@ class RetryPolicyTest {
         }
         assertEquals(1, attempts)
     }
+
+    @Test
+    fun doesNotMatch429InMessageString() {
+        // 429/5xx 已由 MiMoTTSClient 规范为 IOException；isRetryable 不再靠 message contains "429" 判断，
+        // 否则任何含 "429" 的消息（如字节数 "got 4290 bytes"）都会被误判为可重试。
+        var attempts = 0
+        assertThrows(IllegalStateException::class.java) {
+            runBlocking {
+                RetryPolicy.withRetry(retryCount = 3, baseDelayMs = 1) {
+                    attempts++
+                    throw IllegalStateException("got 4290 bytes")
+                }
+            }
+        }
+        assertEquals(1, attempts)
+    }
 }
