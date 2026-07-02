@@ -70,6 +70,7 @@ import com.voxengine.data.VoiceEntity
 import com.voxengine.engine.mimo.MiMoTTSClient
 import com.voxengine.engine.EngineRegistry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -677,7 +678,7 @@ private suspend fun playAudio(wavData: ByteArray) = withContext(Dispatchers.IO) 
     track.write(pcmData, 0, pcmData.size)
     track.play()
     while (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-        Thread.sleep(50)
+        delay(50)
     }
     track.release()
 }

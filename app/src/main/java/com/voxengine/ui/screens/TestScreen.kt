@@ -54,6 +54,7 @@ import com.voxengine.data.SynthesisHistoryEntity
 import com.voxengine.engine.EngineRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -453,7 +454,7 @@ private suspend fun playAudioWithControl(
     track.play()
     onTrackReady(track) // 暴露 track 引用
     while (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-        Thread.sleep(50)
+        delay(50)
     }
     track.release()
 }

@@ -128,7 +128,7 @@ class EdgeTTSClient {
         return mp3.toByteArray()
     }
 
-    private class ForbiddenException(val serverDateMs: Long?) : java.io.IOException("Edge TTS 403 Forbidden")
+    private class ForbiddenException(val serverDateMs: Long?) : RuntimeException("Edge TTS 403 Forbidden")
 
     private fun parseHttpDate(value: String): Long? = runCatching {
         val sdf = SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", Locale.US)

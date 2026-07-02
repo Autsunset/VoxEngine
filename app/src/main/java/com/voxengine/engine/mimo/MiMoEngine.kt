@@ -97,6 +97,8 @@ class MiMoEngine(
      * 流式合成：分句后用有界并发预取，按原始顺序就绪即回调该句 PCM。
      * 首字延迟≈单句延迟，而非整段。供系统 TTS 路径边合成边播放。
      * @param concurrency 同时在途的请求数上限（1-8）。
+     * @param retryCount 可重试错误（429/IOException）的额外重试次数，默认 3。
+     * @param retryBaseDelayMs 退避基准；第 n 次重试前延迟 retryBaseDelayMs * n^2，默认 1500ms。
      * @param onPcm 每句就绪时回调其 PCM（已从 WAV 抽取），按句子原始顺序。
      */
     suspend fun synthesizeStreaming(
@@ -104,6 +106,8 @@ class MiMoEngine(
         voice: String,
         style: String?,
         concurrency: Int,
+        retryCount: Int = DEFAULT_STREAMING_RETRY_COUNT,
+        retryBaseDelayMs: Long = DEFAULT_STREAMING_RETRY_BASE_DELAY_MS,
         onPcm: suspend (ByteArray) -> Unit
     ) {
         val c = getClient()
@@ -120,8 +124,8 @@ class MiMoEngine(
                 async(Dispatchers.IO) {
                     semaphore.withPermit {
                         com.voxengine.util.RetryPolicy.withRetry(
-                            retryCount = 3,
-                            baseDelayMs = 1500,
+                            retryCount = retryCount,
+                            baseDelayMs = retryBaseDelayMs,
                             onRetry = { attempt, error ->
                                 LogManager.appendLog("W", TAG, "Streaming segment retry $attempt: ${error.message}")
                             },
@@ -345,5 +349,7 @@ class MiMoEngine(
 
     companion object {
         private const val TAG = "MiMoEngine"
+        private const val DEFAULT_STREAMING_RETRY_COUNT = 3
+        private const val DEFAULT_STREAMING_RETRY_BASE_DELAY_MS = 1500L
     }
 }

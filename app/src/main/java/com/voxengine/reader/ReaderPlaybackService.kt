@@ -28,6 +28,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -52,7 +54,7 @@ class ReaderPlaybackService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var playbackJob: Job? = null
     private var currentTrack: AudioTrack? = null
-    private var isPaused = false
+    @Volatile private var isPaused = false
     private var state: PlaybackState? = null
     private var lastConservativeSynthesisAt = 0L
 
@@ -77,6 +79,7 @@ class ReaderPlaybackService : Service() {
 
     override fun onDestroy() {
         stopPlayback(releaseService = false)
+        serviceScope.cancel()
         super.onDestroy()
     }
 
@@ -345,26 +348,28 @@ class ReaderPlaybackService : Service() {
             if (audioCache.containsKey(key)) continue
             val (resolvedVoice, resolvedStyle) = resolveAssignment(playbackState, roleChunk)
             val previous = tail
-            val deferred = CoroutineScope(currentCoroutineContext()).async(Dispatchers.IO) {
-                previous?.await()
-                try {
-                    Result.success(
-                        synthesizeParagraph(
-                            engine,
-                            roleChunk.text,
-                            resolvedVoice,
-                            resolvedStyle,
-                            key.paragraphIndex,
-                            voiceConservative[resolvedVoice] ?: false,
-                            playbackState.conservativeRequestIntervalMs,
-                            playbackState.retryCount,
-                            playbackState.retryBaseDelayMs
+            val deferred = coroutineScope {
+                async(Dispatchers.IO) {
+                    previous?.await()
+                    try {
+                        Result.success(
+                            synthesizeParagraph(
+                                engine,
+                                roleChunk.text,
+                                resolvedVoice,
+                                resolvedStyle,
+                                key.paragraphIndex,
+                                voiceConservative[resolvedVoice] ?: false,
+                                playbackState.conservativeRequestIntervalMs,
+                                playbackState.retryCount,
+                                playbackState.retryBaseDelayMs
+                            )
                         )
-                    )
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Throwable) {
-                    Result.failure(error)
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Throwable) {
+                        Result.failure(error)
+                    }
                 }
             }
             audioCache[key] = deferred
@@ -561,10 +566,10 @@ class ReaderPlaybackService : Service() {
                 }
                 if (isPaused) {
                     runCatching { track.pause() }
-                    while (currentCoroutineContext().isActive && isPaused) Thread.sleep(100)
+                    while (currentCoroutineContext().isActive && isPaused) delay(100)
                     if (currentCoroutineContext().isActive) runCatching { track.play() }
                 }
-                Thread.sleep(50)
+                delay(50)
             }
         } finally {
             currentTrack = null

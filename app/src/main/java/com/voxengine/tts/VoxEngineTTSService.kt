@@ -23,12 +23,12 @@ import kotlinx.coroutines.runBlocking
 class VoxEngineTTSService : TextToSpeechService() {
 
     private var settings: SettingsRepository? = null
-    private var currentEngine = "mimo"
-    private var currentVoice = "冰糖"
-    private var currentStyle = "无"
-    private var currentSpeed = 1.0f
-    private var parallelSynthesis = false
-    private var ttsConcurrency = 3
+    @Volatile private var currentEngine = "mimo"
+    @Volatile private var currentVoice = "冰糖"
+    @Volatile private var currentStyle = "无"
+    @Volatile private var currentSpeed = 1.0f
+    @Volatile private var parallelSynthesis = false
+    @Volatile private var ttsConcurrency = 3
     @Volatile private var stopRequested = false
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(serviceJob + Dispatchers.IO)
