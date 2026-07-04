@@ -121,4 +121,53 @@ class ReaderPlaybackPlannerTest {
         // 截断保留最靠前的 chunk，顺序与起点不变
         assertEquals(full.take(2), capped)
     }
+
+    @Test
+    fun chunkKeysSkipsPureSymbolParagraphsAndKeepsText() {
+        val chapters = listOf(TxtChapter("第一章", "正文"))
+        val pages = mapOf(
+            0 to listOf(TxtPage(listOf("你好。", "★★★★★★", "。。。。。", "世界。")))
+        )
+
+        val chunks = ReaderPlaybackPlanner.chunkKeysForPlayback(
+            chapters = chapters,
+            position = ReaderPlaybackPlanner.Position(0, 0),
+            startParagraphIndex = 0,
+            pageTargetLength = 220,
+            pagesForChapter = { pages.getValue(it) }
+        )
+
+        // 纯符号段被跳过，只保留含字/数字的段落
+        assertEquals(listOf("你好。", "世界。"), chunks.map { it.second })
+        // 段落下标从 0 跳到 3（中间两段纯符号被丢弃）；chunkIndex 每段内从 0 起
+        assertEquals(
+            listOf(
+                ReaderPlaybackPlanner.ChunkKey(ReaderPlaybackPlanner.Position(0, 0), 0, 0),
+                ReaderPlaybackPlanner.ChunkKey(ReaderPlaybackPlanner.Position(0, 0), 3, 0)
+            ),
+            chunks.map { it.first }
+        )
+    }
+
+    @Test
+    fun chunkKeysRoleAwareSkipsPureSymbolParagraphs() {
+        val chapters = listOf(TxtChapter("第一章", "正文"))
+        val pages = mapOf(
+            0 to listOf(TxtPage(listOf("她笑了。", "——————", "他点头。")))
+        )
+
+        val chunks = ReaderPlaybackPlanner.chunkKeysForPlaybackRoleAware(
+            chapters = chapters,
+            position = ReaderPlaybackPlanner.Position(0, 0),
+            startParagraphIndex = 0,
+            pageTargetLength = 220,
+            pagesForChapter = { pages.getValue(it) }
+        )
+
+        // 纯符号分隔行被跳过；有字段落保留（角色路由不影响过滤）
+        val texts = chunks.map { it.second.text }
+        assertTrue(texts.none { it.none { c -> c.isLetterOrDigit() } })
+        assertTrue(texts.any { it.contains("她笑了") })
+        assertTrue(texts.any { it.contains("他点头") })
+    }
 }

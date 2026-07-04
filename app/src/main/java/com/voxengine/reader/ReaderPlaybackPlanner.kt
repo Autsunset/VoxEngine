@@ -149,6 +149,10 @@ object ReaderPlaybackPlanner {
             var chunkIndex = 0
             for (span in spans) {
                 for (part in splitTextForTts(span.text)) {
+                    // 跳过纯符号片段（无字/数字）：送合成只会产生杂音。
+                    // RoleSegmenter 已在段级过滤，这里再在切分后的片段级兜底，
+                    // 同时覆盖角色关闭路径（整段即一个 span，纯符号段在此被丢弃）。
+                    if (part.none { it.isLetterOrDigit() }) continue
                     chunks += ChunkKey(position, paragraphIndex, chunkIndex) to
                         RoleChunk(span.role, span.character, part)
                     chunkIndex += 1

@@ -235,9 +235,10 @@ class ReaderPlaybackService : Service() {
 
                 val currentChunks = chunkKeysForPlayback(chapters, pos, playbackState, startParagraphIndex)
                 if (currentChunks.isEmpty()) {
-                    LogManager.appendLog("E", TAG, "Page synthesis returned no playable chunks")
-                    updateNotification("当前页没有可播放音频", false)
-                    break
+                    // 整页无可朗读内容（如纯符号分隔行经 planner 过滤后为空），跳过到下一页，而非中止整本播放。
+                    LogManager.appendLog("I", TAG, "Page ${pos.chapterIndex}.${pos.pageIndex} has no speakable content, skipping")
+                    position = nextPosition
+                    continue
                 }
 
                 updateNotification("${chapter.title} · 第${pos.pageIndex + 1}页", true)
