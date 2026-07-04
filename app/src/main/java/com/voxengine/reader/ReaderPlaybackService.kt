@@ -1,5 +1,6 @@
 package com.voxengine.reader
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -8,10 +9,12 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.media.MediaMetadata
+import android.media.session.MediaSession
+import android.media.session.PlaybackState as PlatformPlaybackState
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
-import androidx.core.app.NotificationCompat
 import androidx.room.withTransaction
 import com.voxengine.MainActivity
 import com.voxengine.R
@@ -57,10 +60,13 @@ class ReaderPlaybackService : Service() {
     @Volatile private var isPaused = false
     private var state: PlaybackState? = null
     private val conservativeThrottle = com.voxengine.util.ConservativeThrottle()
+    // MediaSession 接收耳机/手表/蓝牙的媒体按键（播放/暂停/上下章），系统按活动会话路由。
+    private var mediaSession: MediaSession? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        setupMediaSession()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -79,6 +85,11 @@ class ReaderPlaybackService : Service() {
 
     override fun onDestroy() {
         stopPlayback(releaseService = false)
+        mediaSession?.run {
+            isActive = false
+            release()
+        }
+        mediaSession = null
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -117,6 +128,8 @@ class ReaderPlaybackService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification("准备播放", isPlaying = true))
         playbackJob = serviceScope.launch { runPlayback() }
         publishPlaybackState(true)
+        updateMediaMetadata(state?.title ?: "VoxEngine 听书")
+        updateMediaPlaybackState()
     }
 
     private suspend fun runPlayback() {
@@ -582,6 +595,8 @@ class ReaderPlaybackService : Service() {
         isPaused = true
         currentTrack?.let { track -> runCatching { track.pause() } }
         updateNotification("已暂停", false)
+        publishPlaybackState(true)
+        updateMediaPlaybackState()
     }
 
     private fun resumePlayback() {
@@ -589,6 +604,8 @@ class ReaderPlaybackService : Service() {
         isPaused = false
         currentTrack?.let { track -> runCatching { track.play() } }
         updateNotification("播放中", true)
+        publishPlaybackState(true)
+        updateMediaPlaybackState()
     }
 
     private fun moveChapter(delta: Int) {
@@ -601,6 +618,7 @@ class ReaderPlaybackService : Service() {
         isPaused = false
         playbackJob = serviceScope.launch { runPlayback() }
         publishPlaybackState(true)
+        updateMediaPlaybackState()
     }
 
     private fun stopPlayback(releaseService: Boolean = true) {
@@ -611,6 +629,7 @@ class ReaderPlaybackService : Service() {
         isPaused = false
         publishPlaybackState(false)
         state = null
+        updateMediaPlaybackState()
         stopForeground(STOP_FOREGROUND_REMOVE)
         if (releaseService) stopSelf()
     }
@@ -671,8 +690,13 @@ class ReaderPlaybackService : Service() {
         )
     }
 
-    private fun buildNotification(text: String, isPlaying: Boolean) =
-        NotificationCompat.Builder(this, CHANNEL_ID)
+    private fun buildNotification(text: String, isPlaying: Boolean): Notification {
+        val playPauseAction = mediaAction(
+            if (isPaused) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause,
+            if (isPaused) "继续" else "暂停",
+            serviceIntent(if (isPaused) ACTION_RESUME else ACTION_PAUSE, 1)
+        )
+        return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(state?.title ?: "VoxEngine 听书")
             .setContentText(text)
@@ -685,18 +709,23 @@ class ReaderPlaybackService : Service() {
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
             )
-            .addAction(
-                if (isPaused) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause,
-                if (isPaused) "继续" else "暂停",
-                serviceIntent(if (isPaused) ACTION_RESUME else ACTION_PAUSE, 1)
+            .addAction(playPauseAction)
+            .addAction(mediaAction(android.R.drawable.ic_media_previous, "上一章", serviceIntent(ACTION_PREVIOUS_CHAPTER, 2)))
+            .addAction(mediaAction(android.R.drawable.ic_media_next, "下一章", serviceIntent(ACTION_NEXT_CHAPTER, 3)))
+            .addAction(mediaAction(android.R.drawable.ic_menu_close_clear_cancel, "停止", serviceIntent(ACTION_STOP, 4)))
+            .setStyle(
+                Notification.MediaStyle()
+                    .setMediaSession(mediaSession?.sessionToken)
+                    .setShowActionsInCompactView(0, 1, 2)
             )
-            .addAction(android.R.drawable.ic_media_previous, "上一章", serviceIntent(ACTION_PREVIOUS_CHAPTER, 2))
-            .addAction(android.R.drawable.ic_media_next, "下一章", serviceIntent(ACTION_NEXT_CHAPTER, 3))
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "停止", serviceIntent(ACTION_STOP, 4))
-            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .setCategory(Notification.CATEGORY_TRANSPORT)
             .setOnlyAlertOnce(true)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setPriority(Notification.PRIORITY_DEFAULT)
             .build()
+    }
+
+    private fun mediaAction(icon: Int, title: String, intent: PendingIntent): Notification.Action =
+        Notification.Action.Builder(icon, title, intent).build()
 
     private fun serviceIntent(action: String, requestCode: Int): PendingIntent =
         PendingIntent.getService(
@@ -714,6 +743,61 @@ class ReaderPlaybackService : Service() {
             NotificationManager.IMPORTANCE_LOW
         ).apply { description = getString(R.string.channel_reader_desc) }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+    }
+
+    /**
+     * 建立 MediaSession：耳机/手表/蓝牙的媒体按键由系统路由到当前活动会话。
+     * 会话回调映射到既有的暂停/继续/上下章/停止逻辑，与通知栏按钮走同一路径。
+     * 会话在 onCreate 建好并保持活动；通知通过 MediaStyle 携带其 token，
+     * 系统据此把媒体按键投递到本会话并在锁屏/手表上显示控件。
+     */
+    private fun setupMediaSession() {
+        val session = MediaSession(this, TAG)
+        session.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS)
+        session.setCallback(
+            object : MediaSession.Callback() {
+                override fun onPlay() = resumePlayback()
+                override fun onPause() = pausePlayback()
+                override fun onStop() = stopPlayback()
+                override fun onSkipToNext() = moveChapter(1)
+                override fun onSkipToPrevious() = moveChapter(-1)
+            }
+        )
+        session.isActive = true
+        mediaSession = session
+        updateMediaPlaybackState()
+    }
+
+    /** 同步 PlaybackState：耳机/手表据此把按键路由到本会话，并显示正确的播放/暂停图标。 */
+    private fun updateMediaPlaybackState() {
+        val session = mediaSession ?: return
+        val stateCode = when {
+            state == null || playbackJob == null -> PlatformPlaybackState.STATE_STOPPED
+            isPaused -> PlatformPlaybackState.STATE_PAUSED
+            else -> PlatformPlaybackState.STATE_PLAYING
+        }
+        session.setPlaybackState(
+            PlatformPlaybackState.Builder()
+                .setActions(
+                    PlatformPlaybackState.ACTION_PLAY or
+                        PlatformPlaybackState.ACTION_PAUSE or
+                        PlatformPlaybackState.ACTION_PLAY_PAUSE or
+                        PlatformPlaybackState.ACTION_STOP or
+                        PlatformPlaybackState.ACTION_SKIP_TO_NEXT or
+                        PlatformPlaybackState.ACTION_SKIP_TO_PREVIOUS
+                )
+                .setState(stateCode, PlatformPlaybackState.PLAYBACK_POSITION_UNKNOWN, 1.0f)
+                .build()
+        )
+    }
+
+    /** 设置书名，供锁屏/手表的媒体控件展示。 */
+    private fun updateMediaMetadata(title: String) {
+        mediaSession?.setMetadata(
+            MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_TITLE, title)
+                .build()
+        )
     }
 
     private fun AudioTrack.releaseSafely() {
