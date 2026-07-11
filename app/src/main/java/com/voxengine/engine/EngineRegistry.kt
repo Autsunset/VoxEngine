@@ -1,7 +1,9 @@
 package com.voxengine.engine
 
+import java.util.concurrent.ConcurrentHashMap
+
 object EngineRegistry {
-    private val engines = mutableMapOf<String, TTSEngine>()
+    private val engines = ConcurrentHashMap<String, TTSEngine>()
 
     fun register(engine: TTSEngine) {
         engines[engine.id] = engine

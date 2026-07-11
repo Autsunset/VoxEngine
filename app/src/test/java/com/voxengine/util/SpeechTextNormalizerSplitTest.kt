@@ -56,4 +56,12 @@ class SpeechTextNormalizerSplitTest {
         assertEquals(true, result[0].contains("你好"))
         assertEquals(true, result[1].contains("她说再见"))
     }
+
+    @Test
+    fun `hasSpeakableContent 识别纯符号`() {
+        org.junit.Assert.assertFalse(SpeechTextNormalizer.hasSpeakableContent("……"))
+        org.junit.Assert.assertFalse(SpeechTextNormalizer.hasSpeakableContent("。！？"))
+        org.junit.Assert.assertTrue(SpeechTextNormalizer.hasSpeakableContent("你好"))
+        org.junit.Assert.assertTrue(SpeechTextNormalizer.hasSpeakableContent("Hello"))
+    }
 }

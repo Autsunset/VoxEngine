@@ -21,6 +21,9 @@ object AudioCache {
         override fun sizeOf(key: String, value: CacheEntry): Int = value.audioData.size
     }
 
+    // MessageDigest 非线程安全，ThreadLocal 避免热路径每次 getInstance
+    private val md5Digest = ThreadLocal.withInitial { MessageDigest.getInstance("MD5") }
+
     /**
      * 生成缓存键
      */
@@ -40,13 +43,13 @@ object AudioCache {
      */
     fun get(key: String): ByteArray? {
         val entry = cache.get(key) ?: return null
-        
+
         // 检查是否过期
         if (System.currentTimeMillis() - entry.timestamp > CACHE_TTL_MS) {
             cache.remove(key)
             return null
         }
-        
+
         return entry.audioData
     }
 
@@ -70,7 +73,8 @@ object AudioCache {
     fun size(): Int = cache.size()
 
     private fun md5(input: String): String {
-        val md = MessageDigest.getInstance("MD5")
+        val md = md5Digest.get()!!
+        md.reset()
         val digest = md.digest(input.toByteArray())
         return digest.joinToString("") { "%02x".format(it) }
     }

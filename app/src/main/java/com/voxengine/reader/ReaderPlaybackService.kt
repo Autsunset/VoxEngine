@@ -38,6 +38,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
 
@@ -60,6 +62,14 @@ class ReaderPlaybackService : Service() {
     @Volatile private var isPaused = false
     private var state: PlaybackState? = null
     private val conservativeThrottle = com.voxengine.util.ConservativeThrottle()
+    // 非 conservative 音色的预取并发上限（clone/design 仍串行 + 节流）。
+    private val prefetchSemaphore = Semaphore(DEFAULT_PREFETCH_CONCURRENCY)
+    // 复用 STREAM AudioTrack，避免每段 create/release。
+    private var streamTrack: AudioTrack? = null
+    private var streamSampleRate: Int = 0
+    private var streamChannelConfig: Int = 0
+    private var streamEncoding: Int = 0
+    private var lastProgressPersistAt: Long = 0L
     // MediaSession 接收耳机/手表/蓝牙的媒体按键（播放/暂停/上下章），系统按活动会话路由。
     private var mediaSession: MediaSession? = null
 
@@ -123,8 +133,10 @@ class ReaderPlaybackService : Service() {
             roleProfile = roleProfile
         )
         playbackJob?.cancel()
-        currentTrack?.releaseSafely()
+        currentTrack = null
+        releaseStreamTrack()
         isPaused = false
+        lastProgressPersistAt = 0L
         startForeground(NOTIFICATION_ID, buildNotification("准备播放", isPlaying = true))
         playbackJob = serviceScope.launch { runPlayback() }
         publishPlaybackState(true)
@@ -299,13 +311,13 @@ class ReaderPlaybackService : Service() {
                             playbackFailed = true
                         }
                     if (pageFailed) break
-                    db.readerBookDao().updateProgress(playbackState.uri, pos.chapterIndex, pos.pageIndex, chunk.paragraphIndex)
+                    maybePersistProgress(db, playbackState.uri, pos.chapterIndex, pos.pageIndex, chunk.paragraphIndex)
                     if (playbackState.gapMs > 0 && nextKey?.paragraphIndex != key.paragraphIndex) {
                         delay(playbackState.gapMs)
                     }
                 }
                 if (pageFailed) break
-                db.readerBookDao().updateProgress(playbackState.uri, pos.chapterIndex, pos.pageIndex, 0)
+                persistProgress(db, playbackState.uri, pos.chapterIndex, pos.pageIndex, 0)
                 nextChapterPrefetchPagesByChapter[pos.chapterIndex] = nextChapterPrefetchPageCount + 1
 
                 if (nextPosition != null && nextPosition.chapterIndex != pos.chapterIndex) {
@@ -325,6 +337,8 @@ class ReaderPlaybackService : Service() {
         }
         state = null
         isPaused = false
+        currentTrack = null
+        releaseStreamTrack()
         stopForeground(STOP_FOREGROUND_DETACH)
         stopSelf()
     }
@@ -370,24 +384,44 @@ class ReaderPlaybackService : Service() {
         for ((key, roleChunk) in window) {
             if (audioCache.containsKey(key)) continue
             val (resolvedVoice, resolvedStyle) = resolveAssignment(playbackState, roleChunk)
+            val conservative = voiceConservative[resolvedVoice] ?: false
             val previous = tail
             // 用调用方传入的播放 scope 启动:立即返回、取消联动。
+            // clone/design 仍串行（await previous + throttle）；预设/Edge 有界并发。
             val deferred = prefetchScope.async(Dispatchers.IO) {
-                previous?.await()
+                if (conservative) previous?.await()
                 try {
-                    Result.success(
-                        synthesizeParagraph(
-                            engine,
-                            roleChunk.text,
-                            resolvedVoice,
-                            resolvedStyle,
-                            key.paragraphIndex,
-                            voiceConservative[resolvedVoice] ?: false,
-                            playbackState.conservativeRequestIntervalMs,
-                            playbackState.retryCount,
-                            playbackState.retryBaseDelayMs
+                    if (conservative) {
+                        Result.success(
+                            synthesizeParagraph(
+                                engine,
+                                roleChunk.text,
+                                resolvedVoice,
+                                resolvedStyle,
+                                key.paragraphIndex,
+                                true,
+                                playbackState.conservativeRequestIntervalMs,
+                                playbackState.retryCount,
+                                playbackState.retryBaseDelayMs
+                            )
                         )
-                    )
+                    } else {
+                        prefetchSemaphore.withPermit {
+                            Result.success(
+                                synthesizeParagraph(
+                                    engine,
+                                    roleChunk.text,
+                                    resolvedVoice,
+                                    resolvedStyle,
+                                    key.paragraphIndex,
+                                    false,
+                                    playbackState.conservativeRequestIntervalMs,
+                                    playbackState.retryCount,
+                                    playbackState.retryBaseDelayMs
+                                )
+                            )
+                        }
+                    }
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Throwable) {
@@ -395,6 +429,7 @@ class ReaderPlaybackService : Service() {
                 }
             }
             audioCache[key] = deferred
+            // conservative 用 tail 串行；非 conservative 也推进 tail，便于后续 clone 段等待前序收尾。
             tail = deferred
         }
         return tail
@@ -539,7 +574,82 @@ class ReaderPlaybackService : Service() {
         val encoding = if (bitsPerSample == 16) AudioFormat.ENCODING_PCM_16BIT else AudioFormat.ENCODING_PCM_8BIT
         val bytesPerFrame = channelCount * (bitsPerSample / 8).coerceAtLeast(1)
         val frameCount = if (bytesPerFrame > 0) pcmData.size / bytesPerFrame else pcmData.size
-        val bufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, encoding)
+
+        val track = obtainStreamTrack(sampleRate, channelConfig, encoding)
+        currentTrack = track
+        try {
+            val speed = state?.speed ?: 1.0f
+            if (speed > 0f && kotlin.math.abs(speed - 1.0f) > 0.01f) {
+                runCatching { track.playbackParams = track.playbackParams.setSpeed(speed) }
+            }
+            if (track.playState != AudioTrack.PLAYSTATE_PLAYING && !isPaused) {
+                runCatching { track.play() }
+            }
+            // 写之前记录播放头：STREAM 边写边播，写完再记会少等、截断尾音。
+            val startHead = runCatching { track.playbackHeadPosition }.getOrDefault(0)
+            val targetHead = startHead + frameCount
+            var offset = 0
+            while (offset < pcmData.size && currentCoroutineContext().isActive) {
+                if (isPaused) {
+                    runCatching { track.pause() }
+                    while (currentCoroutineContext().isActive && isPaused) delay(100)
+                    if (currentCoroutineContext().isActive) runCatching { track.play() }
+                }
+                val written = track.write(pcmData, offset, pcmData.size - offset)
+                if (written < 0) throw IllegalStateException("AudioTrack write error: $written")
+                if (written == 0) {
+                    delay(10)
+                    continue
+                }
+                offset += written
+            }
+            val playStartedAt = System.currentTimeMillis()
+            while (currentCoroutineContext().isActive) {
+                val playbackHead = runCatching { track.playbackHeadPosition }.getOrDefault(targetHead)
+                // playbackHeadPosition 为无符号 32 位累加；用差值处理回绕。
+                val played = playbackHead - startHead
+                if (played >= frameCount) break
+                val playState = runCatching { track.playState }.getOrDefault(AudioTrack.PLAYSTATE_STOPPED)
+                val isStarting = played <= 0 && System.currentTimeMillis() - playStartedAt < AUDIO_START_GRACE_MS
+                if (playState != AudioTrack.PLAYSTATE_PLAYING && !isPaused && !isStarting) {
+                    throw IllegalStateException(
+                        "AudioTrack stopped before completion: state=" + playState +
+                            " played=" + played + "/" + frameCount
+                    )
+                }
+                if (isPaused) {
+                    runCatching { track.pause() }
+                    while (currentCoroutineContext().isActive && isPaused) delay(100)
+                    if (currentCoroutineContext().isActive) runCatching { track.play() }
+                }
+                delay(50)
+            }
+        } finally {
+            // 不 release：下一段复用同一 STREAM track；停止/换章时 releaseStreamTrack。
+            if (currentTrack === track) currentTrack = null
+        }
+    }
+
+    private fun obtainStreamTrack(
+        sampleRate: Int,
+        channelConfig: Int,
+        encoding: Int
+    ): AudioTrack {
+        val existing = streamTrack
+        if (existing != null &&
+            streamSampleRate == sampleRate &&
+            streamChannelConfig == channelConfig &&
+            streamEncoding == encoding &&
+            existing.state == AudioTrack.STATE_INITIALIZED
+        ) {
+            // 段间不 flush：上一段已等播放头播完，直接续写避免卡顿/爆音。
+            return existing
+        }
+        releaseStreamTrack()
+        val minBuffer = AudioTrack.getMinBufferSize(sampleRate, channelConfig, encoding)
+        // STREAM 缓冲取 min 与约 0.5s 数据量的较大者，兼顾低延迟与写不阻塞。
+        val halfSecond = sampleRate * (if (channelConfig == AudioFormat.CHANNEL_OUT_STEREO) 4 else 2) / 2
+        val bufferSize = maxOf(minBuffer, halfSecond, 4096)
         val track = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -554,41 +664,48 @@ class ReaderPlaybackService : Service() {
                     .setEncoding(encoding)
                     .build()
             )
-            .setBufferSizeInBytes(maxOf(bufferSize, pcmData.size))
-            .setTransferMode(AudioTrack.MODE_STATIC)
+            .setBufferSizeInBytes(bufferSize)
+            .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
+        track.play()
+        streamTrack = track
+        streamSampleRate = sampleRate
+        streamChannelConfig = channelConfig
+        streamEncoding = encoding
+        return track
+    }
 
-        currentTrack = track
-        try {
-            val written = track.write(pcmData, 0, pcmData.size)
-            if (written != pcmData.size) {
-                throw IllegalStateException("AudioTrack write incomplete: " + written + "/" + pcmData.size)
-            }
-            val speed = state?.speed ?: 1.0f
-            if (speed > 0f && kotlin.math.abs(speed - 1.0f) > 0.01f) {
-                runCatching { track.playbackParams = track.playbackParams.setSpeed(speed) }
-            }
-            track.play()
-            val playStartedAt = System.currentTimeMillis()
-            while (currentCoroutineContext().isActive) {
-                val playbackHead = runCatching { track.playbackHeadPosition }.getOrDefault(frameCount)
-                if (playbackHead >= frameCount) break
-                val playState = runCatching { track.playState }.getOrDefault(AudioTrack.PLAYSTATE_STOPPED)
-                val isStarting = playbackHead == 0 && System.currentTimeMillis() - playStartedAt < AUDIO_START_GRACE_MS
-                if (playState != AudioTrack.PLAYSTATE_PLAYING && !isPaused && !isStarting) {
-                    throw IllegalStateException("AudioTrack stopped before completion: state=" + playState + " head=" + playbackHead + "/" + frameCount)
-                }
-                if (isPaused) {
-                    runCatching { track.pause() }
-                    while (currentCoroutineContext().isActive && isPaused) delay(100)
-                    if (currentCoroutineContext().isActive) runCatching { track.play() }
-                }
-                delay(50)
-            }
-        } finally {
-            currentTrack = null
-            track.releaseSafely()
+    private fun releaseStreamTrack() {
+        streamTrack?.releaseSafely()
+        streamTrack = null
+        streamSampleRate = 0
+        streamChannelConfig = 0
+        streamEncoding = 0
+    }
+
+    private suspend fun maybePersistProgress(
+        db: AppDatabase,
+        uri: String,
+        chapterIndex: Int,
+        pageIndex: Int,
+        paragraphIndex: Int
+    ) {
+        val now = System.currentTimeMillis()
+        if (now - lastProgressPersistAt < PROGRESS_PERSIST_INTERVAL_MS) return
+        persistProgress(db, uri, chapterIndex, pageIndex, paragraphIndex)
+    }
+
+    private suspend fun persistProgress(
+        db: AppDatabase,
+        uri: String,
+        chapterIndex: Int,
+        pageIndex: Int,
+        paragraphIndex: Int
+    ) {
+        withContext(Dispatchers.IO) {
+            db.readerBookDao().updateProgress(uri, chapterIndex, pageIndex, paragraphIndex)
         }
+        lastProgressPersistAt = System.currentTimeMillis()
     }
 
     private fun pausePlayback() {
@@ -615,8 +732,10 @@ class ReaderPlaybackService : Service() {
         playbackState.pageIndex = 0
         playbackState.paragraphIndex = 0
         playbackJob?.cancel()
-        currentTrack?.releaseSafely()
+        currentTrack = null
+        releaseStreamTrack()
         isPaused = false
+        lastProgressPersistAt = 0L
         playbackJob = serviceScope.launch { runPlayback() }
         publishPlaybackState(true)
         updateMediaPlaybackState()
@@ -624,9 +743,9 @@ class ReaderPlaybackService : Service() {
 
     private fun stopPlayback(releaseService: Boolean = true) {
         playbackJob?.cancel()
-        currentTrack?.releaseSafely()
-        playbackJob = null
         currentTrack = null
+        releaseStreamTrack()
+        playbackJob = null
         isPaused = false
         publishPlaybackState(false)
         state = null
@@ -870,6 +989,8 @@ class ReaderPlaybackService : Service() {
         private const val AUDIO_START_GRACE_MS = 1000L
         private const val DEFAULT_RETRY_COUNT = 3
         private const val DEFAULT_RETRY_BASE_DELAY_MS = 2000
+        private const val DEFAULT_PREFETCH_CONCURRENCY = 3
+        private const val PROGRESS_PERSIST_INTERVAL_MS = 3000L
         private const val CHANNEL_ID = "reader_playback"
         private const val NOTIFICATION_ID = 2001
     }

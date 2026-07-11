@@ -91,6 +91,7 @@ class VoiceManageViewModel(app: Application) : AndroidViewModel(app) {
                     engineId = currentEngineId.value
                 )
             )
+            (EngineRegistry.get("mimo") as? com.voxengine.engine.mimo.MiMoEngine)?.invalidateVoiceCache(name)
         }
     }
 
@@ -106,6 +107,7 @@ class VoiceManageViewModel(app: Application) : AndroidViewModel(app) {
                     engineId = currentEngineId.value
                 )
             )
+            (EngineRegistry.get("mimo") as? com.voxengine.engine.mimo.MiMoEngine)?.invalidateVoiceCache(name)
         }
     }
 
@@ -117,7 +119,12 @@ class VoiceManageViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteVoice(id: Long) {
-        viewModelScope.launch { db.voiceDao().deleteById(id) }
+        viewModelScope.launch {
+            val entity = db.voiceDao().getVoiceById(id)
+            db.voiceDao().deleteById(id)
+            (EngineRegistry.get("mimo") as? com.voxengine.engine.mimo.MiMoEngine)
+                ?.invalidateVoiceCache(entity?.name)
+        }
     }
 
     /** 导出全部音色（供 composable 序列化后写入 launcher 返回的 Uri）。 */
@@ -131,6 +138,8 @@ class VoiceManageViewModel(app: Application) : AndroidViewModel(app) {
             val existing = db.voiceDao().getVoiceByEngineAndName(voice.engineId, voice.name)
             if (existing == null) {
                 db.voiceDao().insert(voice.copy(id = 0))
+                (EngineRegistry.get("mimo") as? com.voxengine.engine.mimo.MiMoEngine)
+                    ?.invalidateVoiceCache(voice.name)
                 count++
             }
         }
