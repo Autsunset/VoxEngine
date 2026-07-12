@@ -15,6 +15,7 @@ import com.voxengine.data.ReaderChapterEntity
 import com.voxengine.data.SettingsRepository
 import com.voxengine.engine.EngineRegistry
 import com.voxengine.engine.VoiceInfo
+import com.voxengine.reader.NovelParser
 import com.voxengine.reader.PlaybackSnapshot
 import com.voxengine.reader.ReaderChapterCache
 import com.voxengine.reader.ReaderMeasuredPageCache
@@ -176,7 +177,7 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
                             val bytes = getApplication<Application>().contentResolver
                                 .openInputStream(Uri.parse(book.uri))?.use { it.readBytes() }
                                 ?: throw FileNotFoundException(book.uri)
-                            TxtNovelParser.parse(TxtNovelParser.decode(bytes)).also { parsedChapters ->
+                            NovelParser.parse(bytes, book.title).also { parsedChapters ->
                                 ReaderChapterCache.putChapters(book.uri, parsedChapters)
                                 db.withTransaction {
                                     db.readerChapterDao().deleteByBookUri(book.uri)

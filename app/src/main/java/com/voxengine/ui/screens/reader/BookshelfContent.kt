@@ -52,7 +52,8 @@ internal fun Bookshelf(
                 ) {
                     Icon(Icons.Default.UploadFile, contentDescription = null, modifier = Modifier.size(34.dp))
                     Spacer(Modifier.height(10.dp))
-                    Text("导入TXT", style = MaterialTheme.typography.titleSmall)
+                    Text("导入小说", style = MaterialTheme.typography.titleSmall)
+                    Text("支持 TXT / EPUB", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("可一次选择多本", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
@@ -62,7 +63,7 @@ internal fun Bookshelf(
                 Column(modifier = Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.SpaceBetween) {
                     Row(verticalAlignment = Alignment.Top) {
                         Text(
-                            book.title.removeSuffix(".txt"),
+                            book.title.replace(BOOK_EXTENSION, ""),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 4,
@@ -83,3 +84,5 @@ internal fun Bookshelf(
         }
     }
 }
+
+private val BOOK_EXTENSION = Regex("\\.(txt|epub)$", RegexOption.IGNORE_CASE)

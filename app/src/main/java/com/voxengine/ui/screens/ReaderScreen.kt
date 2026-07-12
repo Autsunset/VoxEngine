@@ -99,8 +99,8 @@ fun ReaderScreen(
                 TopAppBar(
                     title = { Text("书架") },
                     actions = {
-                        IconButton(onClick = { openDocumentLauncher.launch(arrayOf("text/plain", "text/*")) }) {
-                            Icon(Icons.Default.UploadFile, contentDescription = "导入TXT")
+                        IconButton(onClick = { openDocumentLauncher.launch(NOVEL_MIME_TYPES) }) {
+                            Icon(Icons.Default.UploadFile, contentDescription = "导入小说")
                         }
                     }
                 )
@@ -108,7 +108,7 @@ fun ReaderScreen(
         ) { padding ->
             Bookshelf(
                 books = books,
-                onImport = { openDocumentLauncher.launch(arrayOf("text/plain", "text/*")) },
+                onImport = { openDocumentLauncher.launch(NOVEL_MIME_TYPES) },
                 onOpen = { item ->
                     menuVisible = false
                     panelMode = READER_PANEL_NONE
@@ -203,7 +203,7 @@ fun ReaderScreen(
                     panelMode = READER_PANEL_NONE
                     viewModel.closeBook()
                 },
-                onImport = { openDocumentLauncher.launch(arrayOf("text/plain", "text/*")) },
+                onImport = { openDocumentLauncher.launch(NOVEL_MIME_TYPES) },
                 modifier = Modifier.align(Alignment.TopCenter)
             )
             ReaderBottomMenu(
@@ -272,3 +272,10 @@ fun ReaderScreen(
         }
     }
 }
+
+private val NOVEL_MIME_TYPES = arrayOf(
+    "text/plain",
+    "text/*",
+    "application/epub+zip",
+    "application/octet-stream"
+)

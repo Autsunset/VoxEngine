@@ -69,7 +69,7 @@ internal fun ReaderTopMenu(
                 }
             }
             IconButton(onClick = onImport) {
-                Icon(Icons.Default.UploadFile, contentDescription = "导入TXT")
+                Icon(Icons.Default.UploadFile, contentDescription = "导入小说")
             }
         }
     }
