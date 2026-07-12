@@ -2,6 +2,7 @@ package com.voxengine.engine.edge
 
 import com.voxengine.audio.AudioUtils
 import com.voxengine.audio.Mp3Decoder
+import com.voxengine.util.HexEncoding
 import com.voxengine.util.LogManager
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -18,6 +19,32 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+
+internal fun escapeEdgeXml(text: String): String {
+    val firstSpecial = text.indexOfFirst { it == '&' || it == '<' || it == '>' || it == '"' || it == '\'' }
+    if (firstSpecial < 0) return text
+    val escaped = StringBuilder(text.length + 16)
+    escaped.append(text, 0, firstSpecial)
+    for (index in firstSpecial until text.length) {
+        when (val ch = text[index]) {
+            '&' -> escaped.append("&amp;")
+            '<' -> escaped.append("&lt;")
+            '>' -> escaped.append("&gt;")
+            '"' -> escaped.append("&quot;")
+            '\'' -> escaped.append("&apos;")
+            else -> escaped.append(ch)
+        }
+    }
+    return escaped.toString()
+}
+
+internal fun localeFromEdgeVoice(voice: String): String {
+    val firstDash = voice.indexOf('-')
+    if (firstDash <= 0 || firstDash == voice.lastIndex) return "zh-CN"
+    val secondDash = voice.indexOf('-', firstDash + 1)
+    if (secondDash == firstDash + 1) return "zh-CN"
+    return if (secondDash < 0) voice else voice.substring(0, secondDash)
+}
 
 /**
  * 微软 Edge 免费 TTS 客户端。通过 WebSocket 连接 readaloud 端点合成语音。
@@ -79,8 +106,9 @@ class EdgeTTSClient {
 
         val listener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                webSocket.send(buildSpeechConfigMessage())
-                webSocket.send(buildSsmlMessage(requestId, voice, text))
+                val timestamp = isoTimestamp()
+                webSocket.send(buildSpeechConfigMessage(timestamp))
+                webSocket.send(buildSsmlMessage(requestId, voice, text, timestamp))
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -131,13 +159,10 @@ class EdgeTTSClient {
     private class ForbiddenException(val serverDateMs: Long?) : RuntimeException("Edge TTS 403 Forbidden")
 
     private fun parseHttpDate(value: String): Long? = runCatching {
-        val sdf = SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", Locale.US)
-        sdf.timeZone = TimeZone.getTimeZone("GMT")
-        sdf.parse(value)?.time
+        httpDateFormat.get()!!.parse(value)?.time
     }.getOrNull()
 
-    private fun buildSpeechConfigMessage(): String {
-        val timestamp = isoTimestamp()
+    private fun buildSpeechConfigMessage(timestamp: String): String {
         val config = """{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":false,"wordBoundaryEnabled":false},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}"""
         return "X-Timestamp:$timestamp\r\n" +
             "Content-Type:application/json; charset=utf-8\r\n" +
@@ -145,13 +170,12 @@ class EdgeTTSClient {
             config
     }
 
-    private fun buildSsmlMessage(requestId: String, voice: String, text: String): String {
-        val timestamp = isoTimestamp()
+    private fun buildSsmlMessage(requestId: String, voice: String, text: String, timestamp: String): String {
         // 从音色名推导语言区域（如 ja-JP-NanamiNeural -> ja-JP），让日语等非中文音色用正确的 lang，
         // 否则固定 zh-CN 会让服务端按中文处理，日文汉字被读成中文。
-        val lang = localeFromVoice(voice)
+        val lang = localeFromEdgeVoice(voice)
         val ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='$lang'>" +
-            "<voice name='$voice'><prosody rate='+0%' pitch='+0Hz'>${escapeXml(text)}</prosody></voice></speak>"
+            "<voice name='$voice'><prosody rate='+0%' pitch='+0Hz'>${escapeEdgeXml(text)}</prosody></voice></speak>"
         return "X-RequestId:$requestId\r\n" +
             "Content-Type:application/ssml+xml\r\n" +
             "X-Timestamp:$timestamp\r\n" +
@@ -159,48 +183,25 @@ class EdgeTTSClient {
             ssml
     }
 
-    /** 取音色名前两段作为语言区域（语言-国家）。无法解析时回退 zh-CN。 */
-    private fun localeFromVoice(voice: String): String {
-        val parts = voice.split("-")
-        return if (parts.size >= 2 && parts[0].isNotEmpty() && parts[1].isNotEmpty()) {
-            "${parts[0]}-${parts[1]}"
-        } else {
-            "zh-CN"
-        }
-    }
-
     /** 在二进制帧里定位音频负载起点（"Path:audio\r\n" 之后）。 */
     private fun findAudioPayloadStart(data: ByteArray): Int {
-        val marker = "Path:audio\r\n".toByteArray(Charsets.US_ASCII)
-        outer@ for (i in 0..data.size - marker.size) {
-            for (j in marker.indices) {
-                if (data[i + j] != marker[j]) continue@outer
+        outer@ for (i in 0..data.size - AUDIO_PATH_MARKER.size) {
+            for (j in AUDIO_PATH_MARKER.indices) {
+                if (data[i + j] != AUDIO_PATH_MARKER[j]) continue@outer
             }
-            return i + marker.size
+            return i + AUDIO_PATH_MARKER.size
         }
         // 部分实现头部以 2 字节大端长度开头，回退用通用方式：找首个 \r\n\r\n。
-        val sep = "\r\n\r\n".toByteArray(Charsets.US_ASCII)
-        outer2@ for (i in 0..data.size - sep.size) {
-            for (j in sep.indices) {
-                if (data[i + j] != sep[j]) continue@outer2
+        outer2@ for (i in 0..data.size - HEADER_SEPARATOR.size) {
+            for (j in HEADER_SEPARATOR.indices) {
+                if (data[i + j] != HEADER_SEPARATOR[j]) continue@outer2
             }
-            return i + sep.size
+            return i + HEADER_SEPARATOR.size
         }
         return -1
     }
 
-    private fun escapeXml(s: String): String = s
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\"", "&quot;")
-        .replace("'", "&apos;")
-
-    private fun isoTimestamp(): String {
-        val sdf = SimpleDateFormat("EEE MMM dd yyyy HH:mm:ss 'GMT+0000 (Coordinated Universal Time)'", Locale.US)
-        sdf.timeZone = TimeZone.getTimeZone("UTC")
-        return sdf.format(Date())
-    }
+    private fun isoTimestamp(): String = timestampFormat.get()!!.format(Date())
 
     /**
      * 生成 Sec-MS-GEC 令牌：取当前 Windows FILETIME（1601 纪元、100ns 单位），
@@ -212,8 +213,10 @@ class EdgeTTSClient {
         var ticks = (unixMs / 1000 + WIN_EPOCH_DIFF_SECONDS) * 10_000_000L
         ticks -= ticks % 3_000_000_000L
         val strToHash = "$ticks$TRUSTED_CLIENT_TOKEN"
-        val digest = MessageDigest.getInstance("SHA-256").digest(strToHash.toByteArray(Charsets.US_ASCII))
-        return digest.joinToString("") { "%02X".format(it) }
+        val md = sha256Digest.get()!!
+        md.reset()
+        val digest = md.digest(strToHash.toByteArray(Charsets.US_ASCII))
+        return HexEncoding.upper(digest)
     }
 
     /** 简单的线程安全字节累加器（onMessage 可能跨线程回调）。 */
@@ -234,6 +237,22 @@ class EdgeTTSClient {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
         private const val ORIGIN = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
         private const val WIN_EPOCH_DIFF_SECONDS = 11644473600L
+        private val AUDIO_PATH_MARKER = "Path:audio\r\n".toByteArray(Charsets.US_ASCII)
+        private val HEADER_SEPARATOR = "\r\n\r\n".toByteArray(Charsets.US_ASCII)
+        private val sha256Digest = ThreadLocal.withInitial { MessageDigest.getInstance("SHA-256") }
+        private val httpDateFormat = ThreadLocal.withInitial {
+            SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("GMT")
+            }
+        }
+        private val timestampFormat = ThreadLocal.withInitial {
+            SimpleDateFormat(
+                "EEE MMM dd yyyy HH:mm:ss 'GMT+0000 (Coordinated Universal Time)'",
+                Locale.US
+            ).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+        }
 
         /** 客户端与服务器的时钟偏差（毫秒），由 403 响应的 Date 头校正后累积。 */
         @Volatile private var clockSkewMs = 0L

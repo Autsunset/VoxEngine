@@ -123,6 +123,57 @@ class ReaderPlaybackPlannerTest {
     }
 
     @Test
+    fun buildPrefetchWindowStopsReadingPagesAfterChunkLimit() {
+        val chapters = listOf(TxtChapter("第一章", "正文"), TxtChapter("第二章", "正文"))
+        val pages = mapOf(
+            0 to listOf(
+                TxtPage(listOf("a0", "a1", "a2")),
+                TxtPage(listOf("unused-current-page"))
+            ),
+            1 to listOf(TxtPage(listOf("unused-next-chapter")))
+        )
+        val calls = mutableListOf<Int>()
+
+        val window = ReaderPlaybackPlanner.buildPrefetchWindow(
+            chapters = chapters,
+            currentPosition = ReaderPlaybackPlanner.Position(0, 0),
+            startParagraphIndex = 0,
+            nextChapterPrefetchPageCount = 1,
+            pageTargetLength = 220,
+            maxChunks = 2,
+            pagesForChapter = { chapterIndex ->
+                calls += chapterIndex
+                pages.getValue(chapterIndex)
+            }
+        )
+
+        assertEquals(listOf("a0", "a1"), window.map { it.second })
+        assertEquals(listOf(0), calls)
+    }
+
+    @Test
+    fun buildPrefetchWindowWithZeroLimitDoesNotPaginate() {
+        val chapters = listOf(TxtChapter("第一章", "正文"))
+        var pageRequests = 0
+
+        val window = ReaderPlaybackPlanner.buildPrefetchWindow(
+            chapters = chapters,
+            currentPosition = ReaderPlaybackPlanner.Position(0, 0),
+            startParagraphIndex = 0,
+            nextChapterPrefetchPageCount = 0,
+            pageTargetLength = 220,
+            maxChunks = 0,
+            pagesForChapter = {
+                pageRequests += 1
+                listOf(TxtPage(listOf("不应访问")))
+            }
+        )
+
+        assertTrue(window.isEmpty())
+        assertEquals(0, pageRequests)
+    }
+
+    @Test
     fun chunkKeysSkipsPureSymbolParagraphsAndKeepsText() {
         val chapters = listOf(TxtChapter("第一章", "正文"))
         val pages = mapOf(

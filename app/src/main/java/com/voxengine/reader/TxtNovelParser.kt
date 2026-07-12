@@ -17,6 +17,7 @@ data class TxtPage(
 object TxtNovelParser {
     private const val PAGE_TARGET_LENGTH = 220
     private const val FALLBACK_CHAPTER_LENGTH = 10_000
+    private val gb18030: Charset = Charset.forName("GB18030")
 
     private val chapterRules = listOf(
         Regex("""^[　 \t]{0,4}(?:序章|楔子|引子|尾声|后记|正文卷|作品相关|番外.{0,40})$"""),
@@ -32,16 +33,16 @@ object TxtNovelParser {
         if (bytes.isEmpty()) return ""
         return when {
             bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte() ->
-                bytes.copyOfRange(3, bytes.size).toString(Charsets.UTF_8)
+                String(bytes, 3, bytes.size - 3, Charsets.UTF_8)
             bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte() ->
-                bytes.copyOfRange(2, bytes.size).toString(Charset.forName("UTF-16LE"))
+                String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE)
             bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte() ->
-                bytes.copyOfRange(2, bytes.size).toString(Charset.forName("UTF-16BE"))
+                String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE)
             else -> runCatching { bytes.toString(Charsets.UTF_8) }
-                .getOrElse { bytes.toString(Charset.forName("GB18030")) }
+                .getOrElse { bytes.toString(gb18030) }
                 .let { decoded ->
                     if (decoded.count { it == '\uFFFD' } > decoded.length / 100) {
-                        bytes.toString(Charset.forName("GB18030"))
+                        bytes.toString(gb18030)
                     } else {
                         decoded
                     }
@@ -53,23 +54,24 @@ object TxtNovelParser {
         val normalized = text.normalizeText()
         if (normalized.isBlank()) return emptyList()
 
-        val lines = normalized.split('\n')
         val headings = mutableListOf<Heading>()
         var offset = 0
-        lines.forEach { line ->
+        var previousHeadingStart: Int? = null
+        normalized.lineSequence().forEach { line ->
             val trimmed = line.trim()
             if (trimmed.length in 2..64 && chapterRules.any { it.matches(trimmed) }) {
-                headings += Heading(trimmed, offset, offset + line.length, volumeRule.matches(trimmed))
+                val heading = Heading(trimmed, offset, offset + line.length, volumeRule.matches(trimmed))
+                val previousStart = previousHeadingStart
+                if (previousStart == null || heading.start - previousStart > 100) {
+                    headings += heading
+                }
+                previousHeadingStart = heading.start
             }
             offset += line.length + 1
         }
 
-        val filtered = headings.filterIndexed { index, heading ->
-            index == 0 || heading.start - headings[index - 1].start > 100
-        }
-
-        return if (filtered.size >= 2) {
-            buildChaptersFromHeadings(normalized, filtered)
+        return if (headings.size >= 2) {
+            buildChaptersFromHeadings(normalized, headings)
         } else {
             splitFallback(normalized)
         }
@@ -86,8 +88,6 @@ object TxtNovelParser {
         val current = mutableListOf<String>()
         var currentCost = 0
 
-        fun partCost(part: String): Int = part.length + paragraphGapCost
-
         fun flushPage() {
             if (current.isNotEmpty()) {
                 pages += TxtPage(current.toList())
@@ -97,14 +97,17 @@ object TxtNovelParser {
         }
 
         paragraphs.forEach { paragraph ->
-            val parts = paragraph.chunked(chunkLength)
-            parts.forEach { part ->
-                val cost = partCost(part)
+            var start = 0
+            while (start < paragraph.length) {
+                val end = minOf(start + chunkLength, paragraph.length)
+                val part = paragraph.substring(start, end)
+                val cost = part.length + paragraphGapCost
                 if (current.isNotEmpty() && currentCost + cost > safeTargetLength) {
                     flushPage()
                 }
                 current += part
                 currentCost += cost
+                start = end
             }
         }
         flushPage()
@@ -121,7 +124,6 @@ object TxtNovelParser {
             val end = headings.getOrNull(index + 1)?.start ?: text.length
             val body = text.substring(heading.titleEnd, end)
                 .trim()
-                .replace(Regex("""^[\n\s]+"""), "")
             chapters += TxtChapter(heading.title, body, heading.isVolume || body.isBlank())
         }
         return chapters.filter { it.content.isNotBlank() || it.isVolume }.ifEmpty { splitFallback(text) }
@@ -150,9 +152,10 @@ object TxtNovelParser {
     }
 
     private fun String.toParagraphs(): List<String> =
-        split(Regex("""\n{1,}"""))
+        lineSequence()
             .map { it.trim() }
             .filter { it.isNotBlank() }
+            .toList()
 
     private fun String.normalizeText(): String =
         replace("\r\n", "\n")

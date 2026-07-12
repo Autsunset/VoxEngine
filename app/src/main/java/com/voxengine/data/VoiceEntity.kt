@@ -32,3 +32,8 @@ data class VoiceListItem(
     val ageGroup: String?,
     val tags: String?
 )
+
+data class VoiceTypeItem(
+    val name: String,
+    val type: String
+)

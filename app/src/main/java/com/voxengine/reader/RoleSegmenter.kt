@@ -28,9 +28,6 @@ object RoleSegmenter {
     private const val OPEN_QUOTES = "“「『‘\""
     private const val CLOSE_QUOTES = "”」』’\""
 
-    /** 至少包含一个可朗读字符（Unicode 字母或数字），否则视为纯符号段应跳过。 */
-    private val HAS_SPEAKABLE_CONTENT = Regex("""[\p{L}\p{N}]""")
-
     /**
      * 说话人前缀正则：对话开引号之前的旁白尾部，形如「张三笑道：」「她道」「老李怒道」。
      * 结构 = 名字(1-10 中日韩/拉丁) + 可选情绪副词 + 可选“着/了” + 说类动词 + 可选“道/说/着”后缀 + 可选冒号 + 行尾。
@@ -54,7 +51,7 @@ object RoleSegmenter {
         val normalized = SpeechTextNormalizer.normalize(text)
         if (normalized.isEmpty()) return emptyList()
 
-        val segments = mutableListOf<RoleSegment>()
+        val segments = ArrayList<RoleSegment>(4)
         val buffer = StringBuilder()
         var inQuote = false
         var lastNarration = "" // 进入对话时回看，用于抓说话人
@@ -62,13 +59,17 @@ object RoleSegmenter {
         fun pushNarration() {
             val s = buffer.toString().trim()
             buffer.clear()
-            if (s.isNotEmpty() && HAS_SPEAKABLE_CONTENT.containsMatchIn(s)) segments += RoleSegment(SpeechRole.NARRATION, null, s)
+            if (SpeechTextNormalizer.hasSpeakableContent(s)) {
+                segments += RoleSegment(SpeechRole.NARRATION, null, s)
+            }
         }
 
         fun pushDialogue() {
             val s = buffer.toString().trim()
             buffer.clear()
-            if (s.isNotEmpty() && HAS_SPEAKABLE_CONTENT.containsMatchIn(s)) segments += RoleSegment(SpeechRole.DIALOGUE, resolveSpeaker(lastNarration, configuredNames), s)
+            if (SpeechTextNormalizer.hasSpeakableContent(s)) {
+                segments += RoleSegment(SpeechRole.DIALOGUE, resolveSpeaker(lastNarration, configuredNames), s)
+            }
         }
 
         for (ch in normalized) {
@@ -88,7 +89,7 @@ object RoleSegmenter {
             }
         }
         // 收尾：未闭合的引号按对话处理，避免末段对话被当旁白。
-        if (buffer.toString().trim().isNotEmpty()) {
+        if (buffer.isNotEmpty()) {
             if (inQuote) pushDialogue() else pushNarration()
         }
         return segments
@@ -103,13 +104,21 @@ object RoleSegmenter {
      */
     private fun resolveSpeaker(narration: String, configuredNames: Set<String>): String? {
         if (narration.isBlank() || configuredNames.isEmpty()) return null
-        val tail = narration.lineSequence().lastOrNull()?.takeLast(64) ?: return null
+        val lineStart = narration.lastIndexOf('\n') + 1
+        val tailStart = maxOf(lineStart, narration.length - 64)
+        val tail = narration.substring(tailStart)
         val regexName = SPEAKER_PATTERN.find(tail)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
         if (regexName != null && regexName in configuredNames) return regexName
-        return configuredNames
-            .mapNotNull { name -> tail.lastIndexOf(name).takeIf { it >= 0 }?.let { it to name } }
-            .maxByOrNull { it.first }
-            ?.second
+        var closestIndex = -1
+        var closestName: String? = null
+        for (name in configuredNames) {
+            val index = tail.lastIndexOf(name)
+            if (index > closestIndex) {
+                closestIndex = index
+                closestName = name
+            }
+        }
+        return closestName
     }
 
     /** 给定片段与角色档，解析应使用的音色名；未配置则回落到 [fallback]。 */
@@ -129,8 +138,23 @@ object RoleSegmenter {
         dialogueVoice: String?,
         characterVoices: Map<String, String>,
         fallback: String
+    ): String = voiceForResolvedCharacter(
+        role = role,
+        narrationVoice = narrationVoice,
+        dialogueVoice = dialogueVoice,
+        characterVoice = character?.let { characterVoices[it] },
+        fallback = fallback
+    )
+
+    /** 已完成角色查表时直接路由，避免热路径为单个片段构造完整角色音色 Map。 */
+    fun voiceForResolvedCharacter(
+        role: SpeechRole,
+        narrationVoice: String?,
+        dialogueVoice: String?,
+        characterVoice: String?,
+        fallback: String
     ): String = when (role) {
         SpeechRole.NARRATION -> narrationVoice ?: fallback
-        SpeechRole.DIALOGUE -> character?.let { characterVoices[it] } ?: dialogueVoice ?: fallback
+        SpeechRole.DIALOGUE -> characterVoice ?: dialogueVoice ?: fallback
     }
 }

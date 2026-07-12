@@ -35,7 +35,7 @@ class MiMoEngine(
     override val supportsVoiceClone = true
     override val supportsVoiceDesign = true
 
-    private var client: MiMoTTSClient? = null
+    @Volatile private var client: MiMoTTSClient? = null
     private val clientConfigMutex = Mutex()
 
     // 音色解析缓存：避免每段合成都 SELECT * 拉出含大 base64 的 voiceParam。
@@ -48,24 +48,25 @@ class MiMoEngine(
     private val voiceResolveCache = ConcurrentHashMap<String, ResolvedVoice>()
 
     private suspend fun getClient(): MiMoTTSClient {
-        val baseUrl = settingsRepository.baseUrl.first()
-        val apiKey = settingsRepository.apiKey.first()
-        val ua = settingsRepository.userAgent.first()
-        if (apiKey.isBlank()) throw IllegalStateException("MiMo API Key 未配置")
+        client?.let { return it }
+        val config = settingsRepository.getMiMoClientConfig()
+        if (config.apiKey.isBlank()) throw IllegalStateException("MiMo API Key 未配置")
 
         clientConfigMutex.withLock {
             val existing = client
-            if (existing != null) {
-                existing.updateConfig(baseUrl, apiKey, ua)
-                return existing
-            }
-            val newClient = MiMoTTSClient(baseUrl, apiKey, ua)
+            if (existing != null) return existing
+            val newClient = MiMoTTSClient()
+            newClient.updateConfig(config.baseUrl, config.apiKey, config.userAgent)
             client = newClient
             return newClient
         }
     }
 
     fun updateClientConfig(baseUrl: String, apiKey: String, userAgent: String? = null) {
+        if (apiKey.isBlank()) {
+            client = null
+            return
+        }
         client?.updateConfig(baseUrl, apiKey, userAgent)
     }
 

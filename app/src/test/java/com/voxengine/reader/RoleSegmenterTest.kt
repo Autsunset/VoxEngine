@@ -114,6 +114,16 @@ class RoleSegmenterTest {
         assertEquals("张三音", RoleSegmenter.voiceFor(named, "旁白音", "对话音", mapOf("张三" to "张三音"), "默认"))
         // 未配置对话音时回落到 fallback
         assertEquals("默认", RoleSegmenter.voiceFor(dialogue, "旁白音", null, emptyMap(), "默认"))
+        assertEquals(
+            "张三音",
+            RoleSegmenter.voiceForResolvedCharacter(
+                role = SpeechRole.DIALOGUE,
+                narrationVoice = "旁白音",
+                dialogueVoice = "对话音",
+                characterVoice = "张三音",
+                fallback = "默认"
+            )
+        )
     }
 
 

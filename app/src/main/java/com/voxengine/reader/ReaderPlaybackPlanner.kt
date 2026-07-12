@@ -60,47 +60,50 @@ object ReaderPlaybackPlanner {
         roleEnabled: Boolean,
         configuredNames: Set<String> = emptySet()
     ): List<Pair<ChunkKey, RoleChunk>> {
-        val window = buildList {
-            val currentChapterPages = pagesForChapter(currentPosition.chapterIndex)
-            for (pageIndex in currentPosition.pageIndex until currentChapterPages.size) {
-                addAll(
-                    chunkKeysCore(
-                        chapters = chapters,
-                        position = Position(currentPosition.chapterIndex, pageIndex),
-                        startParagraphIndex = if (pageIndex == currentPosition.pageIndex) startParagraphIndex else 0,
-                        pageTargetLength = pageTargetLength,
-                        pagesForChapter = pagesForChapter,
-                        roleEnabled = roleEnabled,
-                        configuredNames = configuredNames
-                    )
-                )
-            }
+        val chunkLimit = maxChunks.coerceAtLeast(0)
+        if (chunkLimit == 0) return emptyList()
+        val window = ArrayList<Pair<ChunkKey, RoleChunk>>(minOf(chunkLimit, MAX_PREFETCH_AHEAD))
 
-            val nextChapterPosition = normalizePosition(
-                chapters = chapters,
-                position = Position(currentPosition.chapterIndex + 1, 0),
-                pageTargetLength = pageTargetLength,
-                pagesForChapter = pagesForChapter
+        fun appendPage(position: Position, page: TxtPage, paragraphIndex: Int): Boolean {
+            val remaining = chunkLimit - window.size
+            if (remaining <= 0) return true
+            val chunks = chunkKeysForPage(
+                page = page,
+                position = position,
+                startParagraphIndex = paragraphIndex,
+                roleEnabled = roleEnabled,
+                configuredNames = configuredNames
             )
-            if (nextChapterPosition != null && nextChapterPosition.chapterIndex != currentPosition.chapterIndex) {
-                val nextChapterPages = pagesForChapter(nextChapterPosition.chapterIndex)
-                val pageCount = nextChapterPrefetchPageCount.coerceIn(0, nextChapterPages.size)
-                for (pageIndex in 0 until pageCount) {
-                    addAll(
-                        chunkKeysCore(
-                            chapters = chapters,
-                            position = Position(nextChapterPosition.chapterIndex, pageIndex),
-                            startParagraphIndex = 0,
-                            pageTargetLength = pageTargetLength,
-                            pagesForChapter = pagesForChapter,
-                            roleEnabled = roleEnabled,
-                            configuredNames = configuredNames
-                        )
-                    )
+            if (chunks.size <= remaining) window.addAll(chunks) else window.addAll(chunks.take(remaining))
+            return window.size >= chunkLimit
+        }
+
+        val currentChapterPages = pagesForChapter(currentPosition.chapterIndex)
+        for (pageIndex in currentPosition.pageIndex until currentChapterPages.size) {
+            if (appendPage(
+                    position = Position(currentPosition.chapterIndex, pageIndex),
+                    page = currentChapterPages[pageIndex],
+                    paragraphIndex = if (pageIndex == currentPosition.pageIndex) startParagraphIndex else 0
+                )
+            ) return window
+        }
+
+        val nextChapterPosition = normalizePosition(
+            chapters = chapters,
+            position = Position(currentPosition.chapterIndex + 1, 0),
+            pageTargetLength = pageTargetLength,
+            pagesForChapter = pagesForChapter
+        )
+        if (nextChapterPosition != null && nextChapterPosition.chapterIndex != currentPosition.chapterIndex) {
+            val nextChapterPages = pagesForChapter(nextChapterPosition.chapterIndex)
+            val pageCount = nextChapterPrefetchPageCount.coerceIn(0, nextChapterPages.size)
+            for (pageIndex in 0 until pageCount) {
+                if (appendPage(Position(nextChapterPosition.chapterIndex, pageIndex), nextChapterPages[pageIndex], 0)) {
+                    return window
                 }
             }
         }
-        return if (maxChunks < window.size) window.take(maxChunks.coerceAtLeast(0)) else window
+        return window
     }
 
     fun chunkKeysForPlayback(
@@ -112,7 +115,7 @@ object ReaderPlaybackPlanner {
             TxtNovelParser.paginate(chapters[chapterIndex].content, pageTargetLength)
         }
     ): List<Pair<ChunkKey, String>> =
-        chunkKeysCore(chapters, position, startParagraphIndex, pageTargetLength, pagesForChapter, roleEnabled = false, configuredNames = emptySet())
+        chunkKeysCore(position, startParagraphIndex, pagesForChapter, roleEnabled = false, configuredNames = emptySet())
             .map { (key, chunk) -> key to chunk.text }
 
     /** 角色感知版：每段先经 [RoleSegmenter.segment] 切旁白/对话，再按长度切分，片段携带角色。 */
@@ -126,54 +129,89 @@ object ReaderPlaybackPlanner {
         },
         configuredNames: Set<String> = emptySet()
     ): List<Pair<ChunkKey, RoleChunk>> =
-        chunkKeysCore(chapters, position, startParagraphIndex, pageTargetLength, pagesForChapter, roleEnabled = true, configuredNames = configuredNames)
+        chunkKeysCore(position, startParagraphIndex, pagesForChapter, roleEnabled = true, configuredNames = configuredNames)
 
     private fun chunkKeysCore(
-        chapters: List<TxtChapter>,
         position: Position,
         startParagraphIndex: Int,
-        pageTargetLength: Int,
         pagesForChapter: (Int) -> List<TxtPage>,
         roleEnabled: Boolean,
         configuredNames: Set<String> = emptySet()
     ): List<Pair<ChunkKey, RoleChunk>> {
         val page = pagesForChapter(position.chapterIndex).getOrNull(position.pageIndex)
             ?: return emptyList()
+        return chunkKeysForPage(page, position, startParagraphIndex, roleEnabled, configuredNames)
+    }
+
+    private fun chunkKeysForPage(
+        page: TxtPage,
+        position: Position,
+        startParagraphIndex: Int,
+        roleEnabled: Boolean,
+        configuredNames: Set<String>
+    ): List<Pair<ChunkKey, RoleChunk>> {
         val startIndex = startParagraphIndex.coerceIn(0, page.paragraphs.size)
-        return page.paragraphs.drop(startIndex).flatMapIndexed { offset, paragraph ->
-            val paragraphIndex = startIndex + offset
+        val chunks = ArrayList<Pair<ChunkKey, RoleChunk>>(page.paragraphs.size - startIndex)
+        for (paragraphIndex in startIndex until page.paragraphs.size) {
+            val paragraph = page.paragraphs[paragraphIndex]
             // 角色关闭：整段作为单个 NARRATION 片段 → splitTextForTts 行为与历史完全一致。
-            val spans = if (roleEnabled) RoleSegmenter.segment(paragraph, configuredNames)
-            else listOf(RoleSegment(SpeechRole.NARRATION, null, paragraph))
-            val chunks = mutableListOf<Pair<ChunkKey, RoleChunk>>()
-            var chunkIndex = 0
-            for (span in spans) {
-                for (part in splitTextForTts(span.text)) {
-                    // 跳过纯符号片段（无字/数字）：送合成只会产生杂音。
-                    // RoleSegmenter 已在段级过滤，这里再在切分后的片段级兜底，
-                    // 同时覆盖角色关闭路径（整段即一个 span，纯符号段在此被丢弃）。
-                    if (part.none { it.isLetterOrDigit() }) continue
-                    chunks += ChunkKey(position, paragraphIndex, chunkIndex) to
-                        RoleChunk(span.role, span.character, part)
-                    chunkIndex += 1
+            if (roleEnabled) {
+                var chunkIndex = 0
+                for (span in RoleSegmenter.segment(paragraph, configuredNames)) {
+                    chunkIndex = appendSpanChunks(
+                        chunks,
+                        position,
+                        paragraphIndex,
+                        chunkIndex,
+                        span.role,
+                        span.character,
+                        span.text
+                    )
                 }
+            } else {
+                appendSpanChunks(
+                    chunks,
+                    position,
+                    paragraphIndex,
+                    0,
+                    SpeechRole.NARRATION,
+                    null,
+                    paragraph
+                )
             }
-            chunks
         }
+        return chunks
+    }
+
+    private fun appendSpanChunks(
+        chunks: MutableList<Pair<ChunkKey, RoleChunk>>,
+        position: Position,
+        paragraphIndex: Int,
+        startChunkIndex: Int,
+        role: SpeechRole,
+        character: String?,
+        text: String
+    ): Int {
+        var chunkIndex = startChunkIndex
+        for (part in splitTextForTts(text)) {
+            // 跳过纯符号片段（无字/数字）：送合成只会产生杂音。
+            if (part.none { it.isLetterOrDigit() }) continue
+            chunks += ChunkKey(position, paragraphIndex, chunkIndex) to RoleChunk(role, character, part)
+            chunkIndex += 1
+        }
+        return chunkIndex
     }
 
     fun splitTextForTts(text: String): List<String> {
         if (text.length <= MAX_TTS_CHUNK_CHARS) return listOf(text)
-        val chunks = mutableListOf<String>()
+        val chunks = ArrayList<String>(text.length / MAX_TTS_CHUNK_CHARS + 1)
         var start = 0
         while (start < text.length) {
             val end = chooseTtsSplitEnd(text, start)
             chunks += text.substring(start, end)
             start = end
         }
-        return chunks.ifEmpty { listOf(text) }.also { parts ->
-            check(parts.joinToString(separator = "") == text) { "TTS split changed source text" }
-        }
+        return chunks
     }
 
     fun normalizePosition(

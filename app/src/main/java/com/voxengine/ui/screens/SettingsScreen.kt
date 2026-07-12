@@ -52,6 +52,7 @@ import com.voxengine.data.AppDatabase
 import com.voxengine.data.SettingsRepository
 import com.voxengine.engine.EngineRegistry
 import com.voxengine.engine.TTSEngine
+import com.voxengine.engine.mimo.MiMoEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -287,7 +288,6 @@ fun SettingsScreen() {
                                     text = { Text(name) },
                                     onClick = {
                                         baseUrlInput = url
-                                        scope.launch { settings.updateBaseUrl(url) }
                                         presetExpanded = false
                                     }
                                 )
@@ -332,17 +332,26 @@ fun SettingsScreen() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = {
                         scope.launch {
-                            settings.updateBaseUrl(baseUrlInput)
-                            settings.updateApiKey(apiKeyInput)
-                            settings.updateUserAgent(userAgentInput.ifBlank { "openclaw/unknown" })
+                            val userAgent = userAgentInput.ifBlank { "openclaw/unknown" }
+                            settings.updateMiMoClientConfig(
+                                baseUrl = baseUrlInput,
+                                apiKey = apiKeyInput,
+                                userAgent = userAgent
+                            )
+                            (EngineRegistry.get("mimo") as? MiMoEngine)
+                                ?.updateClientConfig(baseUrlInput, apiKeyInput, userAgent)
                         }
                     }) { Text("保存 API 配置") }
 
                     OutlinedButton(onClick = {
                         scope.launch {
-                            settings.updateBaseUrl("https://api.xiaomimimo.com")
-                            settings.updateApiKey("")
-                            settings.updateUserAgent("openclaw/unknown")
+                            settings.updateMiMoClientConfig(
+                                baseUrl = "https://api.xiaomimimo.com",
+                                apiKey = "",
+                                userAgent = "openclaw/unknown"
+                            )
+                            (EngineRegistry.get("mimo") as? MiMoEngine)
+                                ?.updateClientConfig("https://api.xiaomimimo.com", "", "openclaw/unknown")
                         }
                     }) { Text("清除配置") }
                 }

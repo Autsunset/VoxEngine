@@ -70,6 +70,14 @@ class ReaderPlaybackService : Service() {
     private var streamChannelConfig: Int = 0
     private var streamEncoding: Int = 0
     private var lastProgressPersistAt: Long = 0L
+    private val fallbackPagesByChapter = object : LinkedHashMap<Int, List<TxtPage>>(
+        MAX_FALLBACK_PAGE_CHAPTERS,
+        0.75f,
+        true
+    ) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, List<TxtPage>>?): Boolean =
+            size > MAX_FALLBACK_PAGE_CHAPTERS
+    }
     // MediaSession 接收耳机/手表/蓝牙的媒体按键（播放/暂停/上下章），系统按活动会话路由。
     private var mediaSession: MediaSession? = null
 
@@ -137,6 +145,7 @@ class ReaderPlaybackService : Service() {
         releaseStreamTrack()
         isPaused = false
         lastProgressPersistAt = 0L
+        fallbackPagesByChapter.clear()
         startForeground(NOTIFICATION_ID, buildNotification("准备播放", isPlaying = true))
         playbackJob = serviceScope.launch { runPlayback() }
         publishPlaybackState(true)
@@ -152,11 +161,7 @@ class ReaderPlaybackService : Service() {
         } catch (e: Exception) {
             LogManager.appendLog("E", TAG, "Reader playback failed: ${e.message}")
             updateNotification("听书失败: ${com.voxengine.util.TtsErrors.friendly(e)}", false)
-            isPaused = false
-            publishPlaybackState(false)
-            state = null
-            stopForeground(STOP_FOREGROUND_DETACH)
-            stopSelf()
+            finishPlayback()
         }
     }
 
@@ -168,6 +173,7 @@ class ReaderPlaybackService : Service() {
         val engine = EngineRegistry.get(playbackState.engineId)
         if (engine == null) {
             updateNotification("未找到引擎 ${playbackState.engineId}", false)
+            finishPlayback()
             return
         }
         val db = AppDatabase.getDatabase(this)
@@ -195,12 +201,11 @@ class ReaderPlaybackService : Service() {
         }
         if (chapters.isEmpty()) {
             updateNotification("没有可播放章节", false)
+            finishPlayback()
             return
         }
-        val customVoice = withContext(Dispatchers.IO) { db.voiceDao().getVoiceByName(playbackState.voice) }
-        val defaultConservative = customVoice?.type == "clone" || customVoice?.type == "design"
         // 分角色开启时，旁白/对话/各角色音色可能各异；预取所有可能用到的音色的类型，决定是否需要节流。
-        val voiceConservative = buildVoiceConservativeMap(playbackState, db, defaultConservative)
+        val voiceConservative = buildVoiceConservativeMap(playbackState, db)
 
         var position = normalizePosition(chapters, PlaybackPosition(playbackState.chapterIndex, playbackState.pageIndex))
         val startPosition = position
@@ -263,7 +268,7 @@ class ReaderPlaybackService : Service() {
                     if (!currentCoroutineContext().isActive) break
 
                     val (resolvedVoice, resolvedStyle) = resolveAssignment(playbackState, roleChunk)
-                    val conservativeForChunk = voiceConservative[resolvedVoice] ?: defaultConservative
+                    val conservativeForChunk = voiceConservative[resolvedVoice] ?: false
                     val preparedResult = audioCache[key]?.await()
                     audioCache.remove(key)
                     var chunk = preparedResult?.getOrNull()
@@ -333,12 +338,17 @@ class ReaderPlaybackService : Service() {
 
         if (!playbackFailed) {
             updateNotification("听书已结束", false)
-            publishPlaybackState(false)
         }
+        finishPlayback()
+    }
+
+    private fun finishPlayback() {
+        publishPlaybackState(false)
         state = null
         isPaused = false
         currentTrack = null
         releaseStreamTrack()
+        fallbackPagesByChapter.clear()
         stopForeground(STOP_FOREGROUND_DETACH)
         stopSelf()
     }
@@ -475,17 +485,17 @@ class ReaderPlaybackService : Service() {
         chunk: ReaderPlaybackPlanner.RoleChunk
     ): Pair<String, String?> {
         val profile = playbackState.roleProfile
-        val voice = RoleSegmenter.voiceFor(
+        val characterAssignment = chunk.character?.let { profile.characters[it] }
+        val voice = RoleSegmenter.voiceForResolvedCharacter(
             role = chunk.role,
-            character = chunk.character,
             narrationVoice = profile.narration.voice,
             dialogueVoice = profile.dialogue.voice,
-            characterVoices = profile.characters.mapNotNull { (k, v) -> v.voice?.let { k to it } }.toMap(),
+            characterVoice = characterAssignment?.voice,
             fallback = playbackState.voice
         )
         val style = when (chunk.role) {
             SpeechRole.NARRATION -> profile.narration.style
-            SpeechRole.DIALOGUE -> chunk.character?.let { profile.characters[it]?.style } ?: profile.dialogue.style
+            SpeechRole.DIALOGUE -> characterAssignment?.style ?: profile.dialogue.style
         } ?: playbackState.style
         return voice to style
     }
@@ -496,19 +506,20 @@ class ReaderPlaybackService : Service() {
      */
     private suspend fun buildVoiceConservativeMap(
         playbackState: PlaybackState,
-        db: AppDatabase,
-        defaultConservative: Boolean
+        db: AppDatabase
     ): Map<String, Boolean> = withContext(Dispatchers.IO) {
         val profile = playbackState.roleProfile
         val names = buildSet {
             add(playbackState.voice)
             profile.narration.voice?.let { add(it) }
             profile.dialogue.voice?.let { add(it) }
-            addAll(profile.characters.values.mapNotNull { v -> v.voice })
+            for (assignment in profile.characters.values) assignment.voice?.let { add(it) }
         }
+        val typesByName = db.voiceDao()
+            .getVoiceTypesByEngineAndNames(playbackState.engineId, names.toList())
+            .associate { it.name to it.type }
         names.associateWith { name ->
-            if (name == playbackState.voice) defaultConservative
-            else db.voiceDao().getVoiceByName(name)?.let { it.type == "clone" || it.type == "design" } ?: false
+            typesByName[name] == "clone" || typesByName[name] == "design"
         }
     }
 
@@ -540,8 +551,10 @@ class ReaderPlaybackService : Service() {
         chapterIndex: Int,
         playbackState: PlaybackState
     ): List<TxtPage> = ReaderMeasuredPageCache.getChapterPages(playbackState.uri, chapterIndex)
-        ?: TxtNovelParser.paginate(chapters[chapterIndex].content, playbackState.pageTargetLength).also {
-            LogManager.appendLog("W", TAG, "Reader fallback pagination used: chapter=$chapterIndex pages=${it.size}")
+        ?: fallbackPagesByChapter.getOrPut(chapterIndex) {
+            TxtNovelParser.paginate(chapters[chapterIndex].content, playbackState.pageTargetLength).also {
+                LogManager.appendLog("W", TAG, "Reader fallback pagination used: chapter=$chapterIndex pages=${it.size}")
+            }
         }
 
     private fun normalizePosition(chapters: List<TxtChapter>, position: PlaybackPosition): PlaybackPosition? {
@@ -749,6 +762,7 @@ class ReaderPlaybackService : Service() {
         isPaused = false
         publishPlaybackState(false)
         state = null
+        fallbackPagesByChapter.clear()
         updateMediaPlaybackState()
         stopForeground(STOP_FOREGROUND_REMOVE)
         if (releaseService) stopSelf()
@@ -991,6 +1005,7 @@ class ReaderPlaybackService : Service() {
         private const val DEFAULT_RETRY_BASE_DELAY_MS = 2000
         private const val DEFAULT_PREFETCH_CONCURRENCY = 3
         private const val PROGRESS_PERSIST_INTERVAL_MS = 3000L
+        private const val MAX_FALLBACK_PAGE_CHAPTERS = 3
         private const val CHANNEL_ID = "reader_playback"
         private const val NOTIFICATION_ID = 2001
     }

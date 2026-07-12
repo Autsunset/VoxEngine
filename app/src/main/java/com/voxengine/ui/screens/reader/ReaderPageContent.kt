@@ -242,14 +242,10 @@ internal fun measurePagesForViewport(
     normalPageHeightPx: Int,
     paragraphGapPx: Int
 ): List<TxtPage> {
-    val paragraphs = content.split(Regex("""\n{1,}"""))
-        .map { it.trim() }
-        .filter { it.isNotBlank() }
-    if (paragraphs.isEmpty()) return listOf(TxtPage(emptyList()))
-
     val pages = mutableListOf<TxtPage>()
     val current = mutableListOf<String>()
     var currentHeight = 0
+    var hasParagraph = false
 
     fun pageHeight(): Int = if (pages.isEmpty()) firstPageHeightPx else normalPageHeightPx
 
@@ -267,12 +263,15 @@ internal fun measurePagesForViewport(
         }
     }
 
-    paragraphs.forEach { paragraph ->
+    content.lineSequence().forEach { line ->
+        val paragraph = line.trim()
+        if (paragraph.isEmpty()) return@forEach
+        hasParagraph = true
         var remaining = paragraph
-        while (remaining.isNotBlank()) {
+        var remainingHeight = measure(remaining)
+        while (remaining.isNotEmpty()) {
             val gap = if (current.isEmpty()) 0 else paragraphGapPx
             val available = pageHeight() - currentHeight - gap
-            val remainingHeight = measure(remaining)
             if (available > 0 && remainingHeight <= available) {
                 current += remaining
                 currentHeight += gap + remainingHeight
@@ -292,9 +291,11 @@ internal fun measurePagesForViewport(
                 }
                 currentHeight = measure(current.last())
                 flushPage()
+                if (remaining.isNotEmpty()) remainingHeight = measure(remaining)
             }
         }
     }
+    if (!hasParagraph) return listOf(TxtPage(emptyList()))
     flushPage()
     return pages.ifEmpty { listOf(TxtPage(emptyList())) }
 }

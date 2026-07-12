@@ -58,4 +58,14 @@ class TxtNovelParserTest {
 
         assertEquals(payload, TxtNovelParser.decode(bytes))
     }
+
+    @Test
+    fun decodeSupportsUtf16BomWithoutLeakingBom() {
+        val payload = "正文内容"
+        val littleEndian = byteArrayOf(0xFF.toByte(), 0xFE.toByte()) + payload.toByteArray(Charsets.UTF_16LE)
+        val bigEndian = byteArrayOf(0xFE.toByte(), 0xFF.toByte()) + payload.toByteArray(Charsets.UTF_16BE)
+
+        assertEquals(payload, TxtNovelParser.decode(littleEndian))
+        assertEquals(payload, TxtNovelParser.decode(bigEndian))
+    }
 }

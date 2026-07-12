@@ -15,6 +15,12 @@ import kotlinx.coroutines.flow.map
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 
+data class MiMoClientConfig(
+    val baseUrl: String,
+    val apiKey: String,
+    val userAgent: String
+)
+
 class SettingsRepository(private val context: Context) {
 
     val baseUrl: Flow<String> = context.dataStore.data.map { it[KEY_BASE_URL] ?: "https://api.xiaomimimo.com" }
@@ -39,33 +45,51 @@ class SettingsRepository(private val context: Context) {
     // 按书的 URI 存储角色档（Map<String, String> JSON），不同书独立不冲突。
     // 读取时优先取当前书的档，未命中则回落到旧的全局 KEY_READER_ROLE_PROFILE_JSON（如有则迁移）。
     suspend fun getReaderRoleProfileForBook(bookUri: String): String {
-        val allJson = context.dataStore.data.first()[KEY_READER_ROLE_PROFILES_JSON] ?: ""
-        val map = parseStringMap(allJson)
+        val preferences = context.dataStore.data.first()
+        val map = parseStringMap(preferences[KEY_READER_ROLE_PROFILES_JSON] ?: "")
         val perBookJson = map[bookUri]
         if (!perBookJson.isNullOrBlank()) return perBookJson
         // 向后兼容：旧全局档迁移到当前书
-        val legacyJson = context.dataStore.data.first()[KEY_READER_ROLE_PROFILE_JSON]
+        val legacyJson = preferences[KEY_READER_ROLE_PROFILE_JSON]
         if (!legacyJson.isNullOrBlank()) {
-            val updated = map.toMutableMap()
-            updated[bookUri] = legacyJson
+            var resolvedJson = legacyJson
             context.dataStore.edit {
+                val updated = parseStringMap(it[KEY_READER_ROLE_PROFILES_JSON] ?: "").toMutableMap()
+                val currentJson = updated[bookUri]
+                if (currentJson.isNullOrBlank()) updated[bookUri] = legacyJson else resolvedJson = currentJson
                 it[KEY_READER_ROLE_PROFILES_JSON] = serializeStringMap(updated)
                 it.remove(KEY_READER_ROLE_PROFILE_JSON)
             }
-            return legacyJson
+            return resolvedJson
         }
         return ""
     }
 
     suspend fun updateReaderRoleProfileForBook(bookUri: String, json: String) {
-        val allJson = context.dataStore.data.first()[KEY_READER_ROLE_PROFILES_JSON] ?: ""
-        val map = parseStringMap(allJson).toMutableMap()
-        map[bookUri] = json
-        context.dataStore.edit { it[KEY_READER_ROLE_PROFILES_JSON] = serializeStringMap(map) }
+        context.dataStore.edit {
+            val updated = parseStringMap(it[KEY_READER_ROLE_PROFILES_JSON] ?: "").toMutableMap()
+            updated[bookUri] = json
+            it[KEY_READER_ROLE_PROFILES_JSON] = serializeStringMap(updated)
+        }
     }
 
-    suspend fun updateBaseUrl(url: String) { context.dataStore.edit { it[KEY_BASE_URL] = url } }
-    suspend fun updateApiKey(key: String) { context.dataStore.edit { it[KEY_API_KEY] = key } }
+    suspend fun getMiMoClientConfig(): MiMoClientConfig {
+        val preferences = context.dataStore.data.first()
+        return MiMoClientConfig(
+            baseUrl = preferences[KEY_BASE_URL] ?: "https://api.xiaomimimo.com",
+            apiKey = preferences[KEY_API_KEY] ?: "",
+            userAgent = preferences[KEY_USER_AGENT] ?: "openclaw/unknown"
+        )
+    }
+
+    suspend fun updateMiMoClientConfig(baseUrl: String, apiKey: String, userAgent: String) {
+        context.dataStore.edit {
+            it[KEY_BASE_URL] = baseUrl
+            it[KEY_API_KEY] = apiKey
+            it[KEY_USER_AGENT] = userAgent
+        }
+    }
+
     suspend fun updateDefaultVoice(voice: String) { context.dataStore.edit { it[KEY_DEFAULT_VOICE] = voice } }
     suspend fun updateDefaultStyle(style: String) { context.dataStore.edit { it[KEY_DEFAULT_STYLE] = style } }
     suspend fun updateSpeed(speed: Float) { context.dataStore.edit { it[KEY_SPEED] = speed } }
@@ -85,7 +109,6 @@ class SettingsRepository(private val context: Context) {
         nightModeMirror.edit().putBoolean(KEY_DARK_MODE_MIRROR, enabled).apply()
     }
     suspend fun updateCurrentEngine(engineId: String) { context.dataStore.edit { it[KEY_CURRENT_ENGINE] = engineId } }
-    suspend fun updateUserAgent(ua: String) { context.dataStore.edit { it[KEY_USER_AGENT] = ua } }
     suspend fun updateParallelSynthesis(enabled: Boolean) { context.dataStore.edit { it[KEY_PARALLEL_SYNTHESIS] = enabled } }
     suspend fun updateTtsConcurrency(count: Int) { context.dataStore.edit { it[KEY_TTS_CONCURRENCY] = count.coerceIn(1, 8) } }
     suspend fun updateReaderParagraphGapMs(gapMs: Int) { context.dataStore.edit { it[KEY_READER_PARAGRAPH_GAP_MS] = gapMs } }
@@ -133,11 +156,14 @@ class SettingsRepository(private val context: Context) {
         private const val KEY_DARK_MODE_MIRROR = "dark_mode"
 
         private val gson by lazy { com.google.gson.Gson() }
+        private val stringMapType by lazy {
+            object : com.google.gson.reflect.TypeToken<Map<String, String>>() {}.type
+        }
 
         private fun parseStringMap(json: String): Map<String, String> {
             if (json.isBlank()) return emptyMap()
             return runCatching {
-                gson.fromJson<Map<String, String>>(json, object : com.google.gson.reflect.TypeToken<Map<String, String>>() {}.type)
+                gson.fromJson<Map<String, String>>(json, stringMapType)
             }.getOrNull() ?: emptyMap()
         }
 

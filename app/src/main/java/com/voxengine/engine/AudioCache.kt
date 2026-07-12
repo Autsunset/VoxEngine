@@ -1,6 +1,7 @@
 package com.voxengine.engine
 
 import android.util.LruCache
+import com.voxengine.util.HexEncoding
 import java.security.MessageDigest
 
 /**
@@ -75,7 +76,7 @@ object AudioCache {
     private fun md5(input: String): String {
         val md = md5Digest.get()!!
         md.reset()
-        val digest = md.digest(input.toByteArray())
-        return digest.joinToString("") { "%02x".format(it) }
+        val digest = md.digest(input.toByteArray(Charsets.UTF_8))
+        return HexEncoding.lower(digest)
     }
 }
