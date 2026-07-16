@@ -11,7 +11,9 @@ data class TTSRequest(
     val model: String,
     val stream: Boolean = false,
     val messages: List<Message>,
-    val audio: AudioConfig
+    val audio: AudioConfig,
+    val temperature: Float? = null,
+    val top_p: Float? = null
 )
 
 data class Message(

@@ -27,6 +27,7 @@ class SettingsRepository(private val context: Context) {
     val apiKey: Flow<String> = context.dataStore.data.map { it[KEY_API_KEY] ?: "" }
     val defaultVoice: Flow<String> = context.dataStore.data.map { it[KEY_DEFAULT_VOICE] ?: "冰糖" }
     val defaultStyle: Flow<String> = context.dataStore.data.map { it[KEY_DEFAULT_STYLE] ?: "无" }
+    val defaultTemperature: Flow<Float> = context.dataStore.data.map { it[KEY_DEFAULT_TEMPERATURE] ?: 0.6f }
     val speed: Flow<Float> = context.dataStore.data.map { it[KEY_SPEED] ?: 1.0f }
     val darkMode: Flow<Boolean> = context.dataStore.data.map { it[KEY_DARK_MODE] ?: false }
     val currentEngine: Flow<String> = context.dataStore.data.map { it[KEY_CURRENT_ENGINE] ?: "mimo" }
@@ -92,6 +93,7 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun updateDefaultVoice(voice: String) { context.dataStore.edit { it[KEY_DEFAULT_VOICE] = voice } }
     suspend fun updateDefaultStyle(style: String) { context.dataStore.edit { it[KEY_DEFAULT_STYLE] = style } }
+    suspend fun updateDefaultTemperature(temperature: Float) { context.dataStore.edit { it[KEY_DEFAULT_TEMPERATURE] = temperature.coerceIn(0f, 1.5f) } }
     suspend fun updateSpeed(speed: Float) { context.dataStore.edit { it[KEY_SPEED] = speed } }
     suspend fun updateDarkMode(enabled: Boolean) {
         cacheDarkModeMirror(enabled)
@@ -134,6 +136,7 @@ class SettingsRepository(private val context: Context) {
         private val KEY_API_KEY = stringPreferencesKey("api_key")
         private val KEY_DEFAULT_VOICE = stringPreferencesKey("default_voice")
         private val KEY_DEFAULT_STYLE = stringPreferencesKey("default_style")
+        private val KEY_DEFAULT_TEMPERATURE = floatPreferencesKey("default_temperature")
         private val KEY_SPEED = floatPreferencesKey("speed")
         private val KEY_DARK_MODE = booleanPreferencesKey("dark_mode")
         private val KEY_CURRENT_ENGINE = stringPreferencesKey("current_engine")

@@ -51,7 +51,8 @@ class MiMoTTSClient(
         voice: String,
         model: String = MODEL_PRESET,
         style: String? = null,
-        optimizeTextPreview: Boolean = false
+        optimizeTextPreview: Boolean = false,
+        temperature: Float? = null
     ): SynthesisResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
         val content = text
@@ -85,7 +86,8 @@ class MiMoTTSClient(
         val request = TTSRequest(
             model = model,
             messages = messages,
-            audio = audioConfig
+            audio = audioConfig,
+            temperature = temperature
         )
 
         val json = gson.toJson(request)

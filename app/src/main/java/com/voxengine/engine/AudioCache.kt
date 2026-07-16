@@ -33,9 +33,10 @@ object AudioCache {
         voice: String,
         style: String?,
         engineId: String,
-        voiceFingerprint: String = voice
+        voiceFingerprint: String = voice,
+        temperature: Float? = null
     ): String {
-        val raw = "$CACHE_VERSION|$engineId|$voiceFingerprint|$text|${style ?: ""}"
+        val raw = "$CACHE_VERSION|$engineId|$voiceFingerprint|$text|${style ?: ""}|t=${temperature ?: ""}"
         return md5(raw)
     }
 

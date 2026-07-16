@@ -135,6 +135,7 @@ class MiMoEngine(
     ) {
         val c = getClient()
         val resolved = resolveVoice(voice)
+        val temperature = settingsRepository.defaultTemperature.first()
         val sentences = splitTextToSentences(text)
         val limit = concurrency.coerceIn(1, 8)
         Log.d(TAG, "Streaming synthesis: ${sentences.size} segments, concurrency=$limit")
@@ -154,7 +155,8 @@ class MiMoEngine(
                         voice = voice,
                         style = style,
                         engineId = id,
-                        voiceFingerprint = resolved.voiceFingerprint
+                        voiceFingerprint = resolved.voiceFingerprint,
+                        temperature = temperature
                     )
                     AudioCache.get(cacheKey)?.let { cached ->
                         return@async SynthesisResult(
@@ -176,7 +178,8 @@ class MiMoEngine(
                                     text = speechText,
                                     voice = resolved.voiceParam,
                                     model = resolved.model,
-                                    style = style
+                                    style = style,
+                                    temperature = temperature
                                 )
                             }
                         )
@@ -219,12 +222,14 @@ class MiMoEngine(
             return silenceResult()
         }
         val resolved = resolveVoice(voice)
+        val temperature = settingsRepository.defaultTemperature.first()
         val cacheKey = AudioCache.generateKey(
             text = speechText,
             voice = voice,
             style = style,
             engineId = id,
-            voiceFingerprint = resolved.voiceFingerprint
+            voiceFingerprint = resolved.voiceFingerprint,
+            temperature = temperature
         )
         if (!optimizeTextPreview) {
             val cachedAudio = AudioCache.get(cacheKey)
@@ -245,7 +250,8 @@ class MiMoEngine(
             voice = resolved.voiceParam,
             model = resolved.model,
             style = style,
-            optimizeTextPreview = optimizeTextPreview && resolved.model == MiMoTTSClient.MODEL_DESIGN
+            optimizeTextPreview = optimizeTextPreview && resolved.model == MiMoTTSClient.MODEL_DESIGN,
+            temperature = temperature
         )
 
         if (!optimizeTextPreview) {

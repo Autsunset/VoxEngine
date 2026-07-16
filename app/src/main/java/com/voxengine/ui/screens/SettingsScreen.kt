@@ -83,6 +83,7 @@ fun SettingsScreen() {
     val currentEngineId by settings.currentEngine.collectAsState(initial = "mimo")
     val parallelSynthesis by settings.parallelSynthesis.collectAsState(initial = false)
     val ttsConcurrency by settings.ttsConcurrency.collectAsState(initial = 3)
+    val defaultTemperature by settings.defaultTemperature.collectAsState(initial = 0.6f)
 
     var baseUrlInput by remember { mutableStateOf(baseUrl) }
     var apiKeyInput by remember { mutableStateOf(apiKey) }
@@ -496,6 +497,23 @@ fun SettingsScreen() {
                     valueRange = 0.5f..2.0f,
                     steps = 14
                 )
+
+                if (currentEngineId == "mimo") {
+                    Spacer(Modifier.height(8.dp))
+                    Text("采样温度: ${String.format("%.2f", defaultTemperature)}")
+                    Slider(
+                        value = defaultTemperature,
+                        onValueChange = { scope.launch { settings.updateDefaultTemperature(it) } },
+                        valueRange = 0f..1.5f,
+                        steps = 14
+                    )
+                    Text(
+                        "控制合成随机性。值越低越稳定一致，值越高越多样自然。\n" +
+                        "克隆/听书建议 0.1–0.3 以减少句间风格漂移；预设音色可用默认 0.6。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
 
