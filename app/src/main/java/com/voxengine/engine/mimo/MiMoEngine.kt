@@ -80,7 +80,8 @@ class MiMoEngine(
     private suspend fun resolveVoice(voice: String): ResolvedVoice {
         voiceResolveCache[voice]?.let { return it }
         val db = AppDatabase.getDatabase(com.voxengine.VoxEngineApplication.instance)
-        val customVoice = db.voiceDao().getVoiceByEngineAndName(id, voice)
+        // 轻量投影：不读 audioBase64，避免与 voiceParam 双份 base64 撑爆 CursorWindow
+        val customVoice = db.voiceDao().getVoiceResolveByEngineAndName(id, voice)
         val resolved = when (customVoice?.type) {
             "clone" -> ResolvedVoice(
                 model = MiMoTTSClient.MODEL_CLONE,

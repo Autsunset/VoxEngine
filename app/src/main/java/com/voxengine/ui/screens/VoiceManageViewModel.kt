@@ -19,7 +19,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -80,6 +79,8 @@ class VoiceManageViewModel(app: Application) : AndroidViewModel(app) {
 
     fun saveCloneVoice(name: String, description: String, audioBase64: String) {
         viewModelScope.launch {
+            // 只写 voiceParam，不再冗余写 audioBase64：
+            // 双份 base64 会让 SELECT * 轻易超过 CursorWindow ~2MB，导致删/改闪退。
             db.voiceDao().insert(
                 VoiceEntity(
                     name = name,
@@ -87,7 +88,7 @@ class VoiceManageViewModel(app: Application) : AndroidViewModel(app) {
                     model = MiMoTTSClient.MODEL_CLONE,
                     voiceParam = "data:audio/wav;base64,$audioBase64",
                     description = description,
-                    audioBase64 = audioBase64,
+                    audioBase64 = null,
                     engineId = currentEngineId.value
                 )
             )
@@ -113,31 +114,38 @@ class VoiceManageViewModel(app: Application) : AndroidViewModel(app) {
 
     fun saveVoiceMeta(voice: VoiceListItem, gender: String?, ageGroup: String?, tags: String) {
         viewModelScope.launch {
-            val entity = db.voiceDao().getVoiceById(voice.id) ?: return@launch
-            db.voiceDao().update(entity.copy(gender = gender, ageGroup = ageGroup, tags = tags))
+            // 只 UPDATE 元数据列，绝不 getVoiceById 拉整行 base64（会 CursorWindow 闪退）
+            db.voiceDao().updateVoiceMeta(voice.id, gender, ageGroup, tags)
         }
     }
 
     fun deleteVoice(id: Long) {
         viewModelScope.launch {
-            val entity = db.voiceDao().getVoiceById(id)
+            // 只取 name 做缓存失效；deleteById 不读行内容，可安全删掉「大 base64 克隆失败」的音色
+            val name = db.voiceDao().getVoiceNameById(id)
             db.voiceDao().deleteById(id)
             (EngineRegistry.get("mimo") as? com.voxengine.engine.mimo.MiMoEngine)
-                ?.invalidateVoiceCache(entity?.name)
+                ?.invalidateVoiceCache(name)
         }
     }
 
-    /** 导出全部音色（供 composable 序列化后写入 launcher 返回的 Uri）。 */
-    suspend fun voicesForExport(): List<VoiceEntity> =
-        db.voiceDao().getAllVoices().first()
+    /**
+     * 导出全部音色（供 composable 序列化后写入 launcher 返回的 Uri）。
+     * 逐条按 id 加载，且不读 audioBase64，避免 CursorWindow 闪退。
+     */
+    suspend fun voicesForExport(): List<VoiceEntity> = withContext(Dispatchers.IO) {
+        db.voiceDao().getAllVoiceIds().mapNotNull { id ->
+            db.voiceDao().getVoiceForExportById(id)?.toEntity()
+        }
+    }
 
     /** 导入音色列表：跳过已存在（同 engineId+name），返回新增数量。 */
     suspend fun importVoices(voices: List<VoiceEntity>): Int = withContext(Dispatchers.IO) {
         var count = 0
         for (voice in voices) {
-            val existing = db.voiceDao().getVoiceByEngineAndName(voice.engineId, voice.name)
-            if (existing == null) {
-                db.voiceDao().insert(voice.copy(id = 0))
+            if (!db.voiceDao().existsByEngineAndName(voice.engineId, voice.name)) {
+                // 丢掉冗余 audioBase64，只保留 voiceParam
+                db.voiceDao().insert(voice.copy(id = 0, audioBase64 = null))
                 (EngineRegistry.get("mimo") as? com.voxengine.engine.mimo.MiMoEngine)
                     ?.invalidateVoiceCache(voice.name)
                 count++
