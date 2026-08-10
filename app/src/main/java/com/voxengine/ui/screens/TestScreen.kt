@@ -1,5 +1,6 @@
 package com.voxengine.ui.screens
 
+import android.annotation.SuppressLint
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -62,6 +63,7 @@ import java.util.Date
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
+@SuppressLint("ProduceStateDoesNotAssignValue") // Compose lint 误报：下方 producer 均显式赋值给 value。
 @Composable
 fun TestScreen() {
     val context = LocalContext.current
@@ -83,7 +85,8 @@ fun TestScreen() {
     }
     
     // 合成历史
-    val history by db.synthesisHistoryDao().getRecent(10).collectAsState(initial = emptyList())
+    val historyFlow = remember(db) { db.synthesisHistoryDao().getRecent(10) }
+    val history by historyFlow.collectAsState(initial = emptyList())
 
     var text by remember { mutableStateOf("你好，欢迎使用 VoxEngine 语音合成引擎！") }
     var selectedVoiceId by remember { mutableStateOf("冰糖") }

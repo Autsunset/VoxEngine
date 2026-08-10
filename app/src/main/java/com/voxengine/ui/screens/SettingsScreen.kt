@@ -1,5 +1,6 @@
 package com.voxengine.ui.screens
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
@@ -57,6 +58,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.Locale
 
 // MiMo API 预设 URL
 private val MIMO_API_PRESETS = listOf(
@@ -67,6 +69,7 @@ private val MIMO_API_PRESETS = listOf(
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
+@SuppressLint("ProduceStateDoesNotAssignValue") // Compose lint 误报：下方 producer 均显式赋值给 value。
 @Composable
 fun SettingsScreen() {
     val context = LocalContext.current
@@ -99,7 +102,7 @@ fun SettingsScreen() {
     LaunchedEffect(apiKey) { apiKeyInput = apiKey }
     LaunchedEffect(defaultStyle) { styleInput = defaultStyle }
 
-    val activeEngine = EngineRegistry.get(currentEngineId)
+    val activeEngine = remember(currentEngineId) { EngineRegistry.get(currentEngineId) }
     
     // 预设音色
     val presetVoices by produceState(initialValue = emptyList(), activeEngine) {
@@ -107,7 +110,10 @@ fun SettingsScreen() {
     }
     
     // 自定义音色（从数据库加载）
-    val customVoices by db.voiceDao().getVoiceItemsByEngine(currentEngineId).collectAsState(initial = emptyList())
+    val customVoiceFlow = remember(currentEngineId) {
+        db.voiceDao().getVoiceItemsByEngine(currentEngineId)
+    }
+    val customVoices by customVoiceFlow.collectAsState(initial = emptyList())
     
     // 合并所有音色
     val allVoices = remember(presetVoices, customVoices) {
@@ -490,7 +496,7 @@ fun SettingsScreen() {
                     Spacer(Modifier.height(8.dp))
                 }
 
-                Text("语速: ${String.format("%.1f", speed)}x")
+                Text("语速: ${String.format(Locale.getDefault(), "%.1f", speed)}x")
                 Slider(
                     value = speed,
                     onValueChange = { scope.launch { settings.updateSpeed(it) } },
@@ -500,7 +506,7 @@ fun SettingsScreen() {
 
                 if (currentEngineId == "mimo") {
                     Spacer(Modifier.height(8.dp))
-                    Text("采样温度: ${String.format("%.2f", defaultTemperature)}")
+                    Text("采样温度: ${String.format(Locale.getDefault(), "%.2f", defaultTemperature)}")
                     Slider(
                         value = defaultTemperature,
                         onValueChange = { scope.launch { settings.updateDefaultTemperature(it) } },

@@ -53,6 +53,16 @@ import com.voxengine.reader.TxtChapter
 import com.voxengine.reader.TxtPage
 import kotlin.math.roundToInt
 
+private data class ReaderPageFrame(
+    val animationKey: Long,
+    val chapterIndex: Int,
+    val chapterCount: Int,
+    val pageIndex: Int,
+    val pageCount: Int,
+    val chapterTitle: String,
+    val paragraphs: List<String>
+)
+
 @OptIn(ExperimentalFoundationApi::class, ExperimentalAnimationApi::class)
 @Composable
 internal fun ReaderPage(
@@ -123,6 +133,15 @@ internal fun ReaderPage(
                 .associateWith { measureChapterPagesForIndex(it) }
         }
         val displayPages = measuredPages.ifEmpty { pages }
+        val pageFrame = ReaderPageFrame(
+            animationKey = pageAnimationKey,
+            chapterIndex = chapterIndex,
+            chapterCount = chapters.size.coerceAtLeast(1),
+            pageIndex = pageIndex,
+            pageCount = displayPages.size.coerceAtLeast(1),
+            chapterTitle = chapterTitle,
+            paragraphs = displayPages.getOrNull(pageIndex)?.paragraphs.orEmpty()
+        )
         LaunchedEffect(chapterIndex, measuredPages, adjacentMeasuredPages) {
             onPagesMeasured(chapterIndex, measuredPages)
             adjacentMeasuredPages.forEach { (measuredChapterIndex, measuredChapterPages) ->
@@ -164,21 +183,22 @@ internal fun ReaderPage(
             }
 
             AnimatedContent(
-                targetState = pageAnimationKey,
+                targetState = pageFrame,
                 transitionSpec = {
                     val direction = if (pageAnimationForward) 1 else -1
                     slideInHorizontally(animationSpec = tween(220)) { fullWidth -> fullWidth * direction } togetherWith
                         slideOutHorizontally(animationSpec = tween(220)) { fullWidth -> -fullWidth * direction }
                 },
+                contentKey = { it.animationKey },
                 label = "reader-page-slide",
                 modifier = Modifier.fillMaxSize()
-            ) {
+            ) { frame ->
                 Column(
                     modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 22.dp)
                 ) {
-                    if (pageIndex == 0) {
+                    if (frame.pageIndex == 0) {
                         Text(
-                            chapters.getOrNull(chapterIndex)?.title ?: book.title,
+                            frame.chapterTitle,
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             maxLines = 2,
@@ -187,7 +207,7 @@ internal fun ReaderPage(
                         Spacer(Modifier.height(8.dp))
                     }
                     Text(
-                        "第${chapterIndex + 1}/${chapters.size.coerceAtLeast(1)}章 · 第${pageIndex + 1}/${displayPages.size.coerceAtLeast(1)}页",
+                        "第${frame.chapterIndex + 1}/${frame.chapterCount}章 · 第${frame.pageIndex + 1}/${frame.pageCount}页",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -196,7 +216,7 @@ internal fun ReaderPage(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        displayPages.getOrNull(pageIndex)?.paragraphs.orEmpty().forEachIndexed { index, paragraph ->
+                        frame.paragraphs.forEachIndexed { index, paragraph ->
                             Text(
                                 paragraph,
                                 modifier = Modifier
