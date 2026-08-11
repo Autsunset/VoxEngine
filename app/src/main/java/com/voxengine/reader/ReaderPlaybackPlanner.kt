@@ -249,6 +249,13 @@ object ReaderPlaybackPlanner {
         return normalizePosition(chapters, Position(nextChapter, 0), pageTargetLength, pagesForChapter)
     }
 
+    /** 媒体键切章使用严格边界；越界返回 null，避免末章“下一章”把当前章从头重播。 */
+    fun targetChapter(currentChapter: Int, delta: Int, chapterCount: Int): Int? {
+        if (chapterCount <= 0) return null
+        val target = currentChapter.toLong() + delta.toLong()
+        return if (target in 0 until chapterCount.toLong()) target.toInt() else null
+    }
+
     private fun chooseTtsSplitEnd(text: String, start: Int): Int {
         val maxEnd = minOf(text.length, start + MAX_TTS_CHUNK_CHARS)
         if (maxEnd == text.length) return text.length
@@ -257,8 +264,18 @@ object ReaderPlaybackPlanner {
         if (sentenceEnd > start) return sentenceEnd
         val softEnd = findLastSplitChar(text, minEnd, maxEnd, SOFT_SPLIT_CHARS)
         if (softEnd > start) return softEnd
-        return maxEnd
+        return text.safeUtf16End(start, maxEnd)
     }
+
+    /** 不在 UTF-16 代理对中间切段，避免 emoji 等补充平面字符变成非法文本。 */
+    private fun String.safeUtf16End(start: Int, proposedEnd: Int): Int =
+        if (proposedEnd > start && proposedEnd < length &&
+            this[proposedEnd - 1].isHighSurrogate() && this[proposedEnd].isLowSurrogate()
+        ) {
+            proposedEnd - 1
+        } else {
+            proposedEnd
+        }
 
     private fun findLastSplitChar(text: String, minEnd: Int, maxEnd: Int, chars: String): Int {
         for (index in maxEnd - 1 downTo minEnd) {

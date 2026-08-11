@@ -119,10 +119,12 @@ object EpubNovelParser {
     private fun readArchive(bytes: ByteArray): Map<String, ByteArray> {
         val entries = linkedMapOf<String, ByteArray>()
         var totalSize = 0L
+        var entryCount = 0
         ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
             while (true) {
                 val entry = zip.nextEntry ?: break
-                if (entries.size >= MAX_ENTRY_COUNT) throw IllegalArgumentException("EPUB 文件条目过多")
+                entryCount += 1
+                if (entryCount > MAX_ENTRY_COUNT) throw IllegalArgumentException("EPUB 文件条目过多")
                 if (!entry.isDirectory) {
                     val path = normalizeArchivePath(decodePath(entry.name))
                     val content = zip.readBytesLimited(MAX_ENTRY_SIZE)

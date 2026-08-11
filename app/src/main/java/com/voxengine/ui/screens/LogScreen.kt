@@ -32,6 +32,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -63,7 +64,7 @@ fun LogScreen() {
     var endTime by remember { mutableStateOf("23:59") }
     var keyword by remember { mutableStateOf("") }
     var entries by remember { mutableStateOf(emptyList<LogManager.LogEntry>()) }
-    var logPage by remember { mutableStateOf(0) }
+    var logPage by remember { mutableIntStateOf(0) }
     var isLoading by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("") }
     var dateExpanded by remember { mutableStateOf(false) }

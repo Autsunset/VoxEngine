@@ -112,8 +112,12 @@ class VoxEngineTTSService : TextToSpeechService() {
                 val result = runBlocking { engine.synthesize(text, currentVoice, style) }
                 Log.d(TAG, "Got audio: ${result.audioData.size} bytes in ${result.elapsedMs}ms")
                 LogManager.appendLog("D", TAG, "Got audio: ${result.audioData.size} bytes in ${result.elapsedMs}ms")
-                val sampleRate = AudioUtils.getWavSampleRate(result.audioData)
-                val pcmData = AudioUtils.extractPcmData(result.audioData)
+                val wav = AudioUtils.parseWav(result.audioData)
+                val sampleRate = wav.sampleRate
+                val pcmData = wav.pcmData
+                require(wav.channelCount == 1 && wav.bitsPerSample == 16) {
+                    "Unsupported TTS WAV format: channels=${wav.channelCount}, bits=${wav.bitsPerSample}"
+                }
                 if (!started) {
                     val r = callback.start(sampleRate, android.media.AudioFormat.ENCODING_PCM_16BIT, 1)
                     if (r == TextToSpeech.ERROR) {

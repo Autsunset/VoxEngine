@@ -52,6 +52,18 @@ class TxtNovelParserTest {
     }
 
     @Test
+    fun paginateDoesNotSplitEmojiSurrogatePair() {
+        // targetLength=120 时内部段长为 102，令 emoji 横跨原切点。
+        val content = "字".repeat(101) + "😀" + "后文".repeat(80)
+
+        val paragraphs = TxtNovelParser.paginate(content, targetLength = 120).flatMap { it.paragraphs }
+
+        assertEquals(content, paragraphs.joinToString(separator = ""))
+        assertTrue(paragraphs.none { it.lastOrNull()?.isHighSurrogate() == true })
+        assertTrue(paragraphs.none { it.firstOrNull()?.isLowSurrogate() == true })
+    }
+
+    @Test
     fun decodeSupportsUtf8Bom() {
         val payload = "正文内容"
         val bytes = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte()) + payload.toByteArray(Charsets.UTF_8)

@@ -40,6 +40,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -95,7 +96,7 @@ fun TestScreen() {
     var isSynthesizing by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
     var isPaused by remember { mutableStateOf(false) }
-    var elapsedMs by remember { mutableStateOf(0L) }
+    var elapsedMs by remember { mutableLongStateOf(0L) }
     var voiceExpanded by remember { mutableStateOf(false) }
     var styleExpanded by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("") }
@@ -427,13 +428,22 @@ private suspend fun playAudioWithControl(
     speed: Float = 1.0f,
     onTrackReady: (AudioTrack) -> Unit
 ) = withContext(Dispatchers.IO) {
-    val sampleRate = AudioUtils.getWavSampleRate(wavData)
-    val channelCount = AudioUtils.getWavChannelCount(wavData)
-    val bitsPerSample = AudioUtils.getWavBitsPerSample(wavData)
-    val pcmData = AudioUtils.extractPcmData(wavData)
+    val wav = AudioUtils.parseWav(wavData)
+    val sampleRate = wav.sampleRate
+    val channelCount = wav.channelCount
+    val bitsPerSample = wav.bitsPerSample
+    val pcmData = wav.pcmData
 
-    val channelConfig = if (channelCount == 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
-    val encoding = if (bitsPerSample == 16) AudioFormat.ENCODING_PCM_16BIT else AudioFormat.ENCODING_PCM_8BIT
+    val channelConfig = when (channelCount) {
+        1 -> AudioFormat.CHANNEL_OUT_MONO
+        2 -> AudioFormat.CHANNEL_OUT_STEREO
+        else -> throw IllegalArgumentException("不支持的 WAV 声道数: $channelCount")
+    }
+    val encoding = when (bitsPerSample) {
+        8 -> AudioFormat.ENCODING_PCM_8BIT
+        16 -> AudioFormat.ENCODING_PCM_16BIT
+        else -> throw IllegalArgumentException("不支持的 WAV 位深: $bitsPerSample")
+    }
 
     val bufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, encoding)
     val track = AudioTrack.Builder()

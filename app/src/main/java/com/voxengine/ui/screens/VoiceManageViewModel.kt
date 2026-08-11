@@ -155,15 +155,22 @@ class VoiceManageViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun playAudio(wavData: ByteArray) = withContext(Dispatchers.IO) {
-        val sampleRate = com.voxengine.audio.AudioUtils.getWavSampleRate(wavData)
-        val channelCount = com.voxengine.audio.AudioUtils.getWavChannelCount(wavData)
-        val bitsPerSample = com.voxengine.audio.AudioUtils.getWavBitsPerSample(wavData)
-        val pcmData = com.voxengine.audio.AudioUtils.extractPcmData(wavData)
+        val wav = com.voxengine.audio.AudioUtils.parseWav(wavData)
+        val sampleRate = wav.sampleRate
+        val channelCount = wav.channelCount
+        val bitsPerSample = wav.bitsPerSample
+        val pcmData = wav.pcmData
 
-        val channelConfig = if (channelCount == 2) android.media.AudioFormat.CHANNEL_OUT_STEREO
-        else android.media.AudioFormat.CHANNEL_OUT_MONO
-        val encoding = if (bitsPerSample == 16) android.media.AudioFormat.ENCODING_PCM_16BIT
-        else android.media.AudioFormat.ENCODING_PCM_8BIT
+        val channelConfig = when (channelCount) {
+            1 -> android.media.AudioFormat.CHANNEL_OUT_MONO
+            2 -> android.media.AudioFormat.CHANNEL_OUT_STEREO
+            else -> throw IllegalArgumentException("不支持的 WAV 声道数: $channelCount")
+        }
+        val encoding = when (bitsPerSample) {
+            8 -> android.media.AudioFormat.ENCODING_PCM_8BIT
+            16 -> android.media.AudioFormat.ENCODING_PCM_16BIT
+            else -> throw IllegalArgumentException("不支持的 WAV 位深: $bitsPerSample")
+        }
 
         val bufferSize = android.media.AudioTrack.getMinBufferSize(sampleRate, channelConfig, encoding)
         val track = android.media.AudioTrack.Builder()

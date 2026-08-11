@@ -1,70 +1,124 @@
 package com.voxengine.audio
 
-import android.media.AudioFormat
-
 object AudioUtils {
-    fun getWavSampleRate(wavData: ByteArray): Int {
-        if (wavData.size < 24) return 24000
-        val header = String(wavData, 0, 4)
-        return if (header == "RIFF") {
-            wavData[24].toInt() and 0xFF or
-            (wavData[25].toInt() and 0xFF shl 8) or
-            (wavData[26].toInt() and 0xFF shl 16) or
-            (wavData[27].toInt() and 0xFF shl 24)
+    private const val DEFAULT_SAMPLE_RATE = 24_000
+    private const val DEFAULT_CHANNEL_COUNT = 1
+    private const val DEFAULT_BITS_PER_SAMPLE = 16
+
+    /**
+     * 一次解析出播放所需的全部 WAV 信息，供热路径避免对同一文件重复扫描。
+     * 非 WAV 输入按 24 kHz/单声道/PCM16 原始数据处理；损坏的 WAV 安全返回空 PCM。
+     */
+    data class ParsedWav(
+        val sampleRate: Int,
+        val channelCount: Int,
+        val bitsPerSample: Int,
+        val pcmData: ByteArray
+    )
+
+    fun parseWav(wavData: ByteArray): ParsedWav {
+        val layout = parseLayout(wavData)
+        val pcm = if (layout.dataLength == wavData.size && layout.dataOffset == 0) {
+            wavData
+        } else if (layout.dataLength > 0) {
+            wavData.copyOfRange(layout.dataOffset, layout.dataOffset + layout.dataLength)
         } else {
-            24000
+            ByteArray(0)
         }
+        return ParsedWav(layout.sampleRate, layout.channelCount, layout.bitsPerSample, pcm)
     }
 
-    fun getWavChannelCount(wavData: ByteArray): Int {
-        if (wavData.size < 24) return 1
-        val header = String(wavData, 0, 4)
-        return if (header == "RIFF") {
-            wavData[22].toInt() and 0xFF or (wavData[23].toInt() and 0xFF shl 8)
-        } else {
-            1
+    fun getWavSampleRate(wavData: ByteArray): Int = parseLayout(wavData).sampleRate
+
+    fun getWavChannelCount(wavData: ByteArray): Int = parseLayout(wavData).channelCount
+
+    fun getWavBitsPerSample(wavData: ByteArray): Int = parseLayout(wavData).bitsPerSample
+
+    fun extractPcmData(wavData: ByteArray): ByteArray = parseWav(wavData).pcmData
+
+    /**
+     * RIFF 的 fmt/data 块不保证固定在 12/36 字节处。按块扫描既兼容 JUNK/LIST 等扩展块，
+     * 又用 Long 做边界计算，避免恶意或截断 chunk size 导致整数溢出、越界或死循环。
+     */
+    private fun parseLayout(data: ByteArray): WavLayout {
+        if (data.size < 12 || !data.matchesAscii(0, "RIFF") || !data.matchesAscii(8, "WAVE")) {
+            return WavLayout(
+                sampleRate = DEFAULT_SAMPLE_RATE,
+                channelCount = DEFAULT_CHANNEL_COUNT,
+                bitsPerSample = DEFAULT_BITS_PER_SAMPLE,
+                dataOffset = 0,
+                dataLength = data.size
+            )
         }
-    }
 
-    fun getWavBitsPerSample(wavData: ByteArray): Int {
-        if (wavData.size < 34) return 16
-        val header = String(wavData, 0, 4)
-        return if (header == "RIFF") {
-            wavData[34].toInt() and 0xFF or (wavData[35].toInt() and 0xFF shl 8)
-        } else {
-            16
-        }
-    }
-
-    fun getAudioFormat(bitsPerSample: Int, channelCount: Int): Int {
-        return if (bitsPerSample == 16) {
-            if (channelCount == 1) AudioFormat.ENCODING_PCM_16BIT
-            else AudioFormat.ENCODING_PCM_16BIT
-        } else {
-            AudioFormat.ENCODING_PCM_8BIT
-        }
-    }
-
-    fun extractPcmData(wavData: ByteArray): ByteArray {
-        if (wavData.size < 44) return wavData
-        val header = String(wavData, 0, 4)
-        if (header != "RIFF") return wavData
-
+        var sampleRate = DEFAULT_SAMPLE_RATE
+        var channelCount = DEFAULT_CHANNEL_COUNT
+        var bitsPerSample = DEFAULT_BITS_PER_SAMPLE
+        var dataOffset = -1
+        var dataLength = 0
         var offset = 12
-        while (offset + 8 <= wavData.size) {
-            val chunkId = String(wavData, offset, 4)
-            val chunkSize = wavData[offset + 4].toInt() and 0xFF or
-                    (wavData[offset + 5].toInt() and 0xFF shl 8) or
-                    (wavData[offset + 6].toInt() and 0xFF shl 16) or
-                    (wavData[offset + 7].toInt() and 0xFF shl 24)
-            if (chunkId == "data") {
-                return wavData.copyOfRange(offset + 8, minOf(offset + 8 + chunkSize, wavData.size))
+
+        while (offset <= data.size - 8) {
+            val declaredSize = data.readUInt32Le(offset + 4)
+            val payloadOffset = offset + 8
+            val available = data.size - payloadOffset
+            val readableSize = minOf(declaredSize, available.toLong()).toInt()
+
+            when {
+                data.matchesAscii(offset, "fmt ") && readableSize >= 16 -> {
+                    val parsedChannels = data.readUInt16Le(payloadOffset + 2)
+                    val parsedSampleRate = data.readUInt32Le(payloadOffset + 4)
+                    val parsedBits = data.readUInt16Le(payloadOffset + 14)
+                    if (parsedChannels in 1..8) channelCount = parsedChannels
+                    if (parsedSampleRate in 4_000L..384_000L) sampleRate = parsedSampleRate.toInt()
+                    if (parsedBits in setOf(8, 16, 24, 32)) bitsPerSample = parsedBits
+                }
+                dataOffset < 0 && data.matchesAscii(offset, "data") -> {
+                    dataOffset = payloadOffset
+                    dataLength = readableSize
+                }
             }
-            offset += 8 + chunkSize
-            if (chunkSize % 2 != 0) offset++
+
+            // 截断块已消费全部剩余数据，不能再信任其声明长度继续跳转。
+            if (declaredSize > available.toLong()) break
+            val nextOffset = payloadOffset.toLong() + declaredSize + (declaredSize and 1L)
+            if (nextOffset <= offset.toLong() || nextOffset > data.size.toLong()) break
+            offset = nextOffset.toInt()
         }
-        return wavData.copyOfRange(44, wavData.size)
+
+        return WavLayout(
+            sampleRate = sampleRate,
+            channelCount = channelCount,
+            bitsPerSample = bitsPerSample,
+            dataOffset = dataOffset.coerceAtLeast(0),
+            dataLength = if (dataOffset >= 0) dataLength else 0
+        )
     }
+
+    private fun ByteArray.matchesAscii(offset: Int, value: String): Boolean {
+        if (offset < 0 || offset + value.length > size) return false
+        for (index in value.indices) {
+            if (this[offset + index].toInt() != value[index].code) return false
+        }
+        return true
+    }
+
+    private fun ByteArray.readUInt16Le(offset: Int): Int =
+        (this[offset].toInt() and 0xFF) or ((this[offset + 1].toInt() and 0xFF) shl 8)
+
+    private fun ByteArray.readUInt32Le(offset: Int): Long =
+        (this[offset].toLong() and 0xFFL) or
+            ((this[offset + 1].toLong() and 0xFFL) shl 8) or
+            ((this[offset + 2].toLong() and 0xFFL) shl 16) or
+            ((this[offset + 3].toLong() and 0xFFL) shl 24)
+
+    private data class WavLayout(
+        val sampleRate: Int,
+        val channelCount: Int,
+        val bitsPerSample: Int,
+        val dataOffset: Int,
+        val dataLength: Int
+    )
 
     fun pcmToWav(pcmData: ByteArray, sampleRate: Int, channels: Int, bitsPerSample: Int): ByteArray {
         val byteRate = sampleRate * channels * bitsPerSample / 8

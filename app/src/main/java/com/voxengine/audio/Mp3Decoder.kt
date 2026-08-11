@@ -21,76 +21,80 @@ object Mp3Decoder {
         try {
             tempFile.writeBytes(mp3)
             val extractor = MediaExtractor()
-            extractor.setDataSource(tempFile.absolutePath)
-
-            var trackIndex = -1
-            var format: MediaFormat? = null
-            for (i in 0 until extractor.trackCount) {
-                val f = extractor.getTrackFormat(i)
-                if (f.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
-                    trackIndex = i
-                    format = f
-                    break
-                }
-            }
-            if (trackIndex < 0 || format == null) throw IOException("MP3 中未找到音频轨道")
-            extractor.selectTrack(trackIndex)
-
-            val mime = format.getString(MediaFormat.KEY_MIME)!!
-            var sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            var channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-
-            val codec = MediaCodec.createDecoderByType(mime)
-            codec.configure(format, null, null, 0)
-            codec.start()
-
-            val output = ByteArrayOutputStream()
-            val bufferInfo = MediaCodec.BufferInfo()
-            var sawInputEOS = false
-            var sawOutputEOS = false
-
+            var codec: MediaCodec? = null
             try {
+                extractor.setDataSource(tempFile.absolutePath)
+
+                var trackIndex = -1
+                var format: MediaFormat? = null
+                for (i in 0 until extractor.trackCount) {
+                    val f = extractor.getTrackFormat(i)
+                    if (f.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
+                        trackIndex = i
+                        format = f
+                        break
+                    }
+                }
+                if (trackIndex < 0 || format == null) throw IOException("MP3 中未找到音频轨道")
+                extractor.selectTrack(trackIndex)
+
+                val mime = format.getString(MediaFormat.KEY_MIME)!!
+                var sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                var channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+
+                val decoder = MediaCodec.createDecoderByType(mime)
+                codec = decoder
+                decoder.configure(format, null, null, 0)
+                decoder.start()
+
+                val output = ByteArrayOutputStream()
+                val bufferInfo = MediaCodec.BufferInfo()
+                var sawInputEOS = false
+                var sawOutputEOS = false
+
                 while (!sawOutputEOS) {
                     if (!sawInputEOS) {
-                        val inIndex = codec.dequeueInputBuffer(10_000)
+                        val inIndex = decoder.dequeueInputBuffer(10_000)
                         if (inIndex >= 0) {
-                            val inputBuffer = codec.getInputBuffer(inIndex)!!
+                            val inputBuffer = decoder.getInputBuffer(inIndex)!!
                             val sampleSize = extractor.readSampleData(inputBuffer, 0)
                             if (sampleSize < 0) {
-                                codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                decoder.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                 sawInputEOS = true
                             } else {
-                                codec.queueInputBuffer(inIndex, 0, sampleSize, extractor.sampleTime, 0)
+                                decoder.queueInputBuffer(inIndex, 0, sampleSize, extractor.sampleTime, 0)
                                 extractor.advance()
                             }
                         }
                     }
-                    val outIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000)
+                    val outIndex = decoder.dequeueOutputBuffer(bufferInfo, 10_000)
                     when {
                         outIndex >= 0 -> {
-                            val outBuffer = codec.getOutputBuffer(outIndex)!!
+                            val outBuffer = decoder.getOutputBuffer(outIndex)!!
                             if (bufferInfo.size > 0) {
                                 val chunk = ByteArray(bufferInfo.size)
                                 outBuffer.position(bufferInfo.offset)
                                 outBuffer.get(chunk)
                                 output.write(chunk)
                             }
-                            codec.releaseOutputBuffer(outIndex, false)
+                            decoder.releaseOutputBuffer(outIndex, false)
                             if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) sawOutputEOS = true
                         }
                         outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                            val newFormat = codec.outputFormat
+                            val newFormat = decoder.outputFormat
                             sampleRate = newFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                             channelCount = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                         }
                     }
                 }
+                return DecodedPcm(output.toByteArray(), sampleRate, channelCount)
             } finally {
-                runCatching { codec.stop() }
-                runCatching { codec.release() }
+                codec?.let { decoder ->
+                    runCatching { decoder.stop() }
+                    runCatching { decoder.release() }
+                }
                 runCatching { extractor.release() }
             }
-            return DecodedPcm(output.toByteArray(), sampleRate, channelCount)
         } finally {
             tempFile.delete()
         }

@@ -13,7 +13,6 @@ import android.media.MediaMetadata
 import android.media.session.MediaSession
 import android.media.session.PlaybackState as PlatformPlaybackState
 import android.net.Uri
-import android.os.Build
 import android.os.IBinder
 import androidx.room.withTransaction
 import com.voxengine.MainActivity
@@ -204,6 +203,7 @@ class ReaderPlaybackService : Service() {
             finishPlayback()
             return
         }
+        playbackState.chapterCount = chapters.size
         // 分角色开启时，旁白/对话/各角色音色可能各异；预取所有可能用到的音色的类型，决定是否需要节流。
         val voiceConservative = buildVoiceConservativeMap(playbackState, db)
 
@@ -322,7 +322,18 @@ class ReaderPlaybackService : Service() {
                     }
                 }
                 if (pageFailed) break
-                persistProgress(db, playbackState.uri, pos.chapterIndex, pos.pageIndex, 0)
+                // 一页完整播完后保存“下一个未播位置”；否则中断/重启会重复整页。
+                if (nextPosition != null) {
+                    persistProgress(db, playbackState.uri, nextPosition.chapterIndex, nextPosition.pageIndex, 0)
+                } else {
+                    persistProgress(
+                        db,
+                        playbackState.uri,
+                        pos.chapterIndex,
+                        pos.pageIndex,
+                        pages[pos.pageIndex].paragraphs.size
+                    )
+                }
                 nextChapterPrefetchPagesByChapter[pos.chapterIndex] = nextChapterPrefetchPageCount + 1
 
                 if (nextPosition != null && nextPosition.chapterIndex != pos.chapterIndex) {
@@ -345,10 +356,12 @@ class ReaderPlaybackService : Service() {
     private fun finishPlayback() {
         publishPlaybackState(false)
         state = null
+        playbackJob = null
         isPaused = false
         currentTrack = null
         releaseStreamTrack()
         fallbackPagesByChapter.clear()
+        updateMediaPlaybackState()
         stopForeground(STOP_FOREGROUND_DETACH)
         stopSelf()
     }
@@ -578,13 +591,22 @@ class ReaderPlaybackService : Service() {
     }
 
     private suspend fun playAudioChunk(wavData: ByteArray) = withContext(Dispatchers.IO) {
-        val sampleRate = AudioUtils.getWavSampleRate(wavData)
-        val channelCount = AudioUtils.getWavChannelCount(wavData)
-        val bitsPerSample = AudioUtils.getWavBitsPerSample(wavData)
-        val pcmData = AudioUtils.extractPcmData(wavData)
+        val wav = AudioUtils.parseWav(wavData)
+        val sampleRate = wav.sampleRate
+        val channelCount = wav.channelCount
+        val bitsPerSample = wav.bitsPerSample
+        val pcmData = wav.pcmData
         if (pcmData.isEmpty()) throw IllegalArgumentException("音频数据为空")
-        val channelConfig = if (channelCount == 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
-        val encoding = if (bitsPerSample == 16) AudioFormat.ENCODING_PCM_16BIT else AudioFormat.ENCODING_PCM_8BIT
+        val channelConfig = when (channelCount) {
+            1 -> AudioFormat.CHANNEL_OUT_MONO
+            2 -> AudioFormat.CHANNEL_OUT_STEREO
+            else -> throw IllegalArgumentException("不支持的 WAV 声道数: $channelCount")
+        }
+        val encoding = when (bitsPerSample) {
+            8 -> AudioFormat.ENCODING_PCM_8BIT
+            16 -> AudioFormat.ENCODING_PCM_16BIT
+            else -> throw IllegalArgumentException("不支持的 WAV 位深: $bitsPerSample")
+        }
         val bytesPerFrame = channelCount * (bitsPerSample / 8).coerceAtLeast(1)
         val frameCount = if (bytesPerFrame > 0) pcmData.size / bytesPerFrame else pcmData.size
 
@@ -741,7 +763,12 @@ class ReaderPlaybackService : Service() {
 
     private fun moveChapter(delta: Int) {
         val playbackState = state ?: return
-        playbackState.chapterIndex = (playbackState.chapterIndex + delta).coerceAtLeast(0)
+        val targetChapter = ReaderPlaybackPlanner.targetChapter(
+            playbackState.chapterIndex,
+            delta,
+            playbackState.chapterCount
+        ) ?: return
+        playbackState.chapterIndex = targetChapter
         playbackState.pageIndex = 0
         playbackState.paragraphIndex = 0
         playbackJob?.cancel()
@@ -870,7 +897,6 @@ class ReaderPlaybackService : Service() {
         )
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val channel = NotificationChannel(
             CHANNEL_ID,
             getString(R.string.channel_reader),
@@ -957,7 +983,8 @@ class ReaderPlaybackService : Service() {
         val retryBaseDelayMs: Long,
         val roleEnabled: Boolean = false,
         val roleProfile: RoleProfile = RoleProfile(),
-        var speed: Float = 1.0f
+        var speed: Float = 1.0f,
+        var chapterCount: Int = 0
     )
 
     private data class AudioChunk(val paragraphIndex: Int, val audioData: ByteArray)

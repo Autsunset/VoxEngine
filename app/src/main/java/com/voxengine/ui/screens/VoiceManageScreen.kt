@@ -570,13 +570,22 @@ fun DesignVoiceDialog(onDismiss: () -> Unit, onSave: (String, String) -> Unit) {
 }
 
 private suspend fun playAudio(wavData: ByteArray) = withContext(Dispatchers.IO) {
-    val sampleRate = AudioUtils.getWavSampleRate(wavData)
-    val channelCount = AudioUtils.getWavChannelCount(wavData)
-    val bitsPerSample = AudioUtils.getWavBitsPerSample(wavData)
-    val pcmData = AudioUtils.extractPcmData(wavData)
+    val wav = AudioUtils.parseWav(wavData)
+    val sampleRate = wav.sampleRate
+    val channelCount = wav.channelCount
+    val bitsPerSample = wav.bitsPerSample
+    val pcmData = wav.pcmData
 
-    val channelConfig = if (channelCount == 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
-    val encoding = if (bitsPerSample == 16) AudioFormat.ENCODING_PCM_16BIT else AudioFormat.ENCODING_PCM_8BIT
+    val channelConfig = when (channelCount) {
+        1 -> AudioFormat.CHANNEL_OUT_MONO
+        2 -> AudioFormat.CHANNEL_OUT_STEREO
+        else -> throw IllegalArgumentException("不支持的 WAV 声道数: $channelCount")
+    }
+    val encoding = when (bitsPerSample) {
+        8 -> AudioFormat.ENCODING_PCM_8BIT
+        16 -> AudioFormat.ENCODING_PCM_16BIT
+        else -> throw IllegalArgumentException("不支持的 WAV 位深: $bitsPerSample")
+    }
 
     val bufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, encoding)
     val track = AudioTrack.Builder()

@@ -17,6 +17,17 @@ class ReaderPlaybackPlannerTest {
     }
 
     @Test
+    fun splitTextForTtsDoesNotSplitEmojiSurrogatePair() {
+        val text = "字".repeat(179) + "😀" + "结尾".repeat(20)
+
+        val chunks = ReaderPlaybackPlanner.splitTextForTts(text)
+
+        assertEquals(text, chunks.joinToString(separator = ""))
+        assertTrue(chunks.none { it.lastOrNull()?.isHighSurrogate() == true })
+        assertTrue(chunks.none { it.firstOrNull()?.isLowSurrogate() == true })
+    }
+
+    @Test
     fun normalizePositionSkipsEmptyChaptersAndClampsPageIndex() {
         val chapters = listOf(
             TxtChapter("空章", ""),
@@ -60,6 +71,14 @@ class ReaderPlaybackPlannerTest {
             null,
             ReaderPlaybackPlanner.nextPosition(chapters, ReaderPlaybackPlanner.Position(1, 0), 220, pagesForChapter)
         )
+    }
+
+    @Test
+    fun targetChapterRejectsMediaKeyMovesPastBookBounds() {
+        assertEquals(1, ReaderPlaybackPlanner.targetChapter(0, 1, 3))
+        assertEquals(null, ReaderPlaybackPlanner.targetChapter(0, -1, 3))
+        assertEquals(null, ReaderPlaybackPlanner.targetChapter(2, 1, 3))
+        assertEquals(null, ReaderPlaybackPlanner.targetChapter(0, Int.MAX_VALUE, 0))
     }
 
     @Test

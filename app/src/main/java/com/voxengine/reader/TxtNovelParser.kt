@@ -99,7 +99,10 @@ object TxtNovelParser {
         paragraphs.forEach { paragraph ->
             var start = 0
             while (start < paragraph.length) {
-                val end = minOf(start + chunkLength, paragraph.length)
+                var end = minOf(start + chunkLength, paragraph.length)
+                if (end < paragraph.length && paragraph[end - 1].isHighSurrogate() && paragraph[end].isLowSurrogate()) {
+                    end -= 1
+                }
                 val part = paragraph.substring(start, end)
                 val cost = part.length + paragraphGapCost
                 if (current.isNotEmpty() && currentCost + cost > safeTargetLength) {

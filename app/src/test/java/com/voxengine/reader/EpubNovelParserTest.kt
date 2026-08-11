@@ -2,6 +2,7 @@ package com.voxengine.reader
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -80,6 +81,26 @@ class EpubNovelParserTest {
         assertFalse(EpubNovelParser.isEpub("普通文本内容".toByteArray()))
         assertEquals("第1章", chapters.single().title)
         assertEquals("普通文本内容", chapters.single().content)
+    }
+
+    @Test
+    fun archiveEntryLimitCountsDirectoriesToo() {
+        val output = ByteArrayOutputStream()
+        ZipOutputStream(output).use { zip ->
+            zip.putNextEntry(ZipEntry("META-INF/container.xml"))
+            zip.write(containerXml("content.opf").toByteArray())
+            zip.closeEntry()
+            repeat(10_000) { index ->
+                zip.putNextEntry(ZipEntry("empty-$index/"))
+                zip.closeEntry()
+            }
+        }
+
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            EpubNovelParser.parse(output.toByteArray())
+        }
+
+        assertTrue(error.message.orEmpty().contains("条目过多"))
     }
 
     private fun epub(vararg entries: Pair<String, String>): ByteArray {
