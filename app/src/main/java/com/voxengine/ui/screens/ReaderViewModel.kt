@@ -24,11 +24,15 @@ import com.voxengine.reader.TxtChapter
 import com.voxengine.reader.TxtNovelParser
 import com.voxengine.reader.TxtPage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -42,6 +46,7 @@ import java.io.FileNotFoundException
  * 仅承载与组合无关的状态；依赖测量视口的分页（TextMeasurer/BoxWithConstraints）仍由 UI 完成，
  * 测得结果经 [onPagesMeasured] 回灌。菜单显隐等纯 UI 状态保留在 composable。
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class ReaderViewModel(app: Application) : AndroidViewModel(app) {
 
     private val db = AppDatabase.getDatabase(app)
@@ -57,7 +62,16 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
     private var apiKey: String = ""
 
     init {
-        viewModelScope.launch { settings.currentEngine.collect { onEngineChanged(it) } }
+        // ReaderViewModel 会被底部导航保存并恢复，不能只在引擎切换时加载一次音色。
+        // 监听当前引擎的轻量音色列表，让克隆/设计/导入/删除后阅读页无需退出重进即可刷新。
+        viewModelScope.launch {
+            settings.currentEngine
+                .distinctUntilChanged()
+                .flatMapLatest { engineId ->
+                    db.voiceDao().getVoiceItemsByEngine(engineId).map { engineId }
+                }
+                .collect { engineId -> onEngineOrVoicesChanged(engineId) }
+        }
         viewModelScope.launch { settings.apiKey.collect { apiKey = it; recomputeConfigured() } }
         viewModelScope.launch {
             settings.defaultVoice.collect { voice ->
@@ -81,7 +95,7 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settings.readerRoleEnabled.collect { v -> _uiState.update { it.copy(roleEnabled = v) } } }
     }
 
-    private suspend fun onEngineChanged(engineId: String) {
+    private suspend fun onEngineOrVoicesChanged(engineId: String) {
         currentEngineId = engineId
         val loaded = runCatching { EngineRegistry.get(engineId)?.getVoices() }.getOrNull() ?: emptyList()
         _uiState.update { it.copy(voices = loaded) }
