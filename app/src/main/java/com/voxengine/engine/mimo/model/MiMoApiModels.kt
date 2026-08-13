@@ -24,6 +24,7 @@ data class Message(
 data class AudioConfig(
     val format: String = "wav",
     val voice: String? = null,
+    val style: String? = null,
     @SerializedName("optimize_text_preview")
     val optimizeTextPreview: Boolean? = null
 )
