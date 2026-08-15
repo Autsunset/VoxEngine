@@ -2,14 +2,14 @@
 
 Android 系统级 TTS 语音合成引擎，支持多引擎切换、音色克隆与设计。注册为系统 TTS 服务后，任意支持系统语音合成的应用（如 Legado 阅读器）均可直接调用。
 
-## 推荐搭配：阅读 Vox
+## 还需要看小说？可以试试阅读 Vox
 
-如果你需要更完整的网络书源、本地阅读、AI 章节梗概、AI 改写、多角色配音和听书缓存体验，推荐使用 [阅读 Vox（Legado Vox）](https://github.com/Autsunset/legado-vox)。它是基于 Legado 与 legado-with-MD3 二次开发的独立阅读与听书应用。
+如果你除了听书，还需要网络书源、本地阅读、AI 章节梗概、AI 改写、多角色配音和听书缓存等完整的小说阅读功能，可以使用 [阅读 Vox（Legado Vox）](https://github.com/Autsunset/legado-vox)。它是基于 Legado 与 legado-with-MD3 二次开发的独立阅读与听书应用。
 
 - [项目主页与详细说明](https://github.com/Autsunset/legado-vox)
 - [下载阅读 Vox APK](https://github.com/Autsunset/legado-vox/releases)
 
-阅读 Vox 可以直接在应用内配置 MiMo 云 TTS，也可以把 VoxEngine 设为 Android 系统 TTS 后使用。前者适合应用内默认音色和多角色朗读，后者适合让多个支持系统 TTS 的应用共享同一套 VoxEngine 配置。
+阅读 Vox 与 VoxEngine 是相互独立的项目，安装或使用阅读 Vox 不依赖 VoxEngine。阅读 Vox 可以直接在应用内配置 MiMo 云 TTS；如果已经安装 VoxEngine，也可以把它设为 Android 系统 TTS 后供阅读 Vox 或其他应用调用。
 
 ## 功能特性
 
