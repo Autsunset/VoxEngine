@@ -9,7 +9,8 @@
 # Map<String,RoleVoiceStyle> references it by original name) nor its fields.
 -keep class com.voxengine.reader.RoleProfile { *; }
 -keep class com.voxengine.reader.RoleVoiceStyle { *; }
+-keep class com.voxengine.reader.RoleMatchRule { *; }
+-keep class com.voxengine.reader.ReaderSynthesisOptions { *; }
 
 # VoiceEntity is reflected by Gson during voice config import/export.
 -keep class com.voxengine.data.VoiceEntity { *; }
-
