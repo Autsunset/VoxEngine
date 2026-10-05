@@ -37,6 +37,7 @@ class MiMoEngine(
 
     @Volatile private var client: MiMoTTSClient? = null
     private val clientConfigMutex = Mutex()
+    private val streamingThrottle = com.voxengine.util.ConservativeThrottle()
 
     // 音色解析缓存：避免每段合成都 SELECT * 拉出含大 base64 的 voiceParam。
     // 增删改音色时 invalidateVoiceCache；fingerprint 含 createdAt/hash，重克隆不会串缓存。
@@ -103,9 +104,6 @@ class MiMoEngine(
         return resolved
     }
 
-    private fun splitTextToSentences(text: String): List<String> =
-        SpeechTextNormalizer.splitSentences(text)
-
     private fun silenceResult(): SynthesisResult {
         val silence = AudioUtils.silentWav()
         return SynthesisResult(
@@ -117,9 +115,9 @@ class MiMoEngine(
     }
 
     /**
-     * 流式合成：分句后用有界并发预取，按原始顺序就绪即回调该句 PCM。
-     * 首字延迟≈单句延迟，而非整段。供系统 TTS 路径边合成边播放。
-     * 分句级命中 [AudioCache]，避免 Legado 等重复请求同一句时重复计费。
+     * 按用户字数上限切分，以有界并发预取并按原始顺序回调 PCM。
+     * 较长片段减少短句请求与限流等待；系统 TTS 路径边合成边输出。
+     * 片段命中 [AudioCache]，避免阅读应用重复请求时重复计费。
      * @param concurrency 同时在途的请求数上限（1-8）。
      * @param retryCount 可重试错误（429/IOException）的额外重试次数，默认 3。
      * @param retryBaseDelayMs 退避基准；第 n 次重试前延迟 retryBaseDelayMs * n^2，默认 1500ms。
@@ -132,12 +130,17 @@ class MiMoEngine(
         concurrency: Int,
         retryCount: Int = DEFAULT_STREAMING_RETRY_COUNT,
         retryBaseDelayMs: Long = DEFAULT_STREAMING_RETRY_BASE_DELAY_MS,
+        context: String? = null,
         onPcm: suspend (ByteArray) -> Unit
     ) {
         val c = getClient()
         val resolved = resolveVoice(voice)
         val temperature = settingsRepository.defaultTemperature.first()
-        val sentences = splitTextToSentences(text)
+        val options = settingsRepository.readerSynthesisOptions.first()
+        val sentences = com.voxengine.reader.ReaderPlaybackPlanner.splitTextForTts(
+            SpeechTextNormalizer.normalize(text), options.chunkChars
+        )
+        val conservativeInterval = settingsRepository.readerConservativeRequestIntervalMs.first().toLong()
         val limit = concurrency.coerceIn(1, 8)
         Log.d(TAG, "Streaming synthesis: ${sentences.size} segments, concurrency=$limit")
         LogManager.appendLog("D", TAG, "Streaming synthesis: ${sentences.size} segments, concurrency=$limit")
@@ -145,7 +148,8 @@ class MiMoEngine(
         coroutineScope {
             val semaphore = Semaphore(limit)
             // 全部立即排队，由 semaphore 控制实际在途数；async 让后续句子在当前句播放时已在合成。
-            val jobs = sentences.map { sentence ->
+            val jobs = sentences.mapIndexed { index, sentence ->
+                val sentenceContext = context?.let { (it + "\n" + sentences.take(index).joinToString("")).takeLast(1200) }
                 async(Dispatchers.IO) {
                     if (!SpeechTextNormalizer.hasSpeakableContent(sentence)) {
                         return@async silenceResult()
@@ -157,7 +161,8 @@ class MiMoEngine(
                         style = style,
                         engineId = id,
                         voiceFingerprint = resolved.voiceFingerprint,
-                        temperature = temperature
+                        temperature = temperature,
+                        context = sentenceContext
                     )
                     AudioCache.get(cacheKey)?.let { cached ->
                         return@async SynthesisResult(
@@ -171,6 +176,9 @@ class MiMoEngine(
                         val mimoResult = com.voxengine.util.RetryPolicy.withRetry(
                             retryCount = retryCount,
                             baseDelayMs = retryBaseDelayMs,
+                            beforeAttempt = {
+                                if (resolved.model != MiMoTTSClient.MODEL_PRESET) streamingThrottle.waitTurn(conservativeInterval)
+                            },
                             onRetry = { attempt, error ->
                                 LogManager.appendLog("W", TAG, "Streaming segment retry $attempt: ${error.message}")
                             },
@@ -180,7 +188,8 @@ class MiMoEngine(
                                     voice = resolved.voiceParam,
                                     model = resolved.model,
                                     style = style,
-                                    temperature = temperature
+                                    temperature = temperature,
+                                    context = sentenceContext
                                 )
                             }
                         )
@@ -212,11 +221,20 @@ class MiMoEngine(
         }
     }
 
+    suspend fun getCachedSynthesis(text: String, voice: String, style: String?, context: String?): SynthesisResult? {
+        val resolved = resolveVoice(voice)
+        val temperature = settingsRepository.defaultTemperature.first()
+        val key = AudioCache.generateKey(SpeechTextNormalizer.normalize(text), voice, style, id, resolved.voiceFingerprint, temperature, context)
+        val audio = AudioCache.get(key) ?: return null
+        return SynthesisResult(audio, AudioFormat.WAV, AudioUtils.getWavSampleRate(audio), 0, AudioCache.isPersisted(key))
+    }
+
     override suspend fun synthesize(
         text: String,
         voice: String,
         style: String?,
-        optimizeTextPreview: Boolean
+        optimizeTextPreview: Boolean,
+        context: String?
     ): SynthesisResult {
         val speechText = SpeechTextNormalizer.normalize(text)
         if (!optimizeTextPreview && !SpeechTextNormalizer.hasSpeakableContent(speechText)) {
@@ -230,7 +248,8 @@ class MiMoEngine(
             style = style,
             engineId = id,
             voiceFingerprint = resolved.voiceFingerprint,
-            temperature = temperature
+            temperature = temperature,
+            context = context
         )
         if (!optimizeTextPreview) {
             val cachedAudio = AudioCache.get(cacheKey)
@@ -240,7 +259,8 @@ class MiMoEngine(
                     audioData = cachedAudio,
                     format = AudioFormat.WAV,
                     sampleRate = AudioUtils.getWavSampleRate(cachedAudio),
-                    elapsedMs = 0
+                    elapsedMs = 0,
+                    persisted = AudioCache.isPersisted(cacheKey)
                 )
             }
         }
@@ -252,18 +272,18 @@ class MiMoEngine(
             model = resolved.model,
             style = style,
             optimizeTextPreview = optimizeTextPreview && resolved.model == MiMoTTSClient.MODEL_DESIGN,
-            temperature = temperature
+            temperature = temperature,
+            context = context
         )
 
-        if (!optimizeTextPreview) {
-            AudioCache.put(cacheKey, mimoResult.audioData)
-        }
+        val persisted = !optimizeTextPreview && AudioCache.put(cacheKey, mimoResult.audioData)
 
         return SynthesisResult(
             audioData = mimoResult.audioData,
             format = AudioFormat.WAV,
             sampleRate = AudioUtils.getWavSampleRate(mimoResult.audioData),
-            elapsedMs = mimoResult.elapsedMs
+            elapsedMs = mimoResult.elapsedMs,
+            persisted = persisted
         )
     }
 

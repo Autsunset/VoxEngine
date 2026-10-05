@@ -30,12 +30,15 @@ jobs:
           test -n "$RELEASE_KEYSTORE_BASE64"
           printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > voxengine.jks
 
+      - name: Verify reader regressions
+        run: ./gradlew testDebugUnitTest lintDebug --max-workers=2
+
       - name: Build signed release APK
         env:
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleRelease --max-workers=2
 
       - name: Upload release APK artifact
         uses: actions/upload-artifact@v4

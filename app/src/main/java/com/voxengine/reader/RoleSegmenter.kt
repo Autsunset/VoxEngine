@@ -47,7 +47,7 @@ object RoleSegmenter {
      * @param configuredNames 用户已配置的角色名集合。命中时对话片段带 [RoleSegment.character]，
      *   用于路由到该角色音色。为空时不做名字识别（反正无处可路由）。
      */
-    fun segment(text: String, configuredNames: Set<String> = emptySet()): List<RoleSegment> {
+    fun segment(text: String, configuredNames: Set<String> = emptySet(), matchRules: List<RoleMatchRule> = emptyList()): List<RoleSegment> {
         val normalized = SpeechTextNormalizer.normalize(text)
         if (normalized.isEmpty()) return emptyList()
 
@@ -92,7 +92,17 @@ object RoleSegmenter {
         if (buffer.isNotEmpty()) {
             if (inQuote) pushDialogue() else pushNarration()
         }
-        return segments
+        if (matchRules.none { it.enabled }) return segments
+        return segments.mapIndexed { index, segment ->
+            if (segment.role != SpeechRole.DIALOGUE) return@mapIndexed segment
+            val before = segments.getOrNull(index - 1)?.takeIf { it.role == SpeechRole.NARRATION }?.text.orEmpty().takeLast(256)
+            val after = segments.getOrNull(index + 1)?.takeIf { it.role == SpeechRole.NARRATION }?.text.orEmpty().take(256)
+            val matched = matchRules.firstOrNull { rule ->
+                rule.enabled && rule.character in configuredNames &&
+                    runCatching { Regex(rule.pattern).containsMatchIn(if (rule.afterDialogue) after else before) }.getOrDefault(false)
+            }
+            if (matched == null) segment else segment.copy(character = matched.character)
+        }
     }
 
     /**

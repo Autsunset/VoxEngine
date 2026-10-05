@@ -92,6 +92,7 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settings.readerRetryCount.collect { v -> _uiState.update { it.copy(retryCount = v) } } }
         viewModelScope.launch { settings.readerRetryBaseDelayMs.collect { v -> _uiState.update { it.copy(retryBaseDelayMs = v) } } }
         // 分角色朗读配置：持久值变化时同步到 UiState（草稿值，编辑后由 commit 持久化）。
+        viewModelScope.launch { settings.readerSynthesisOptions.collect { v -> _uiState.update { it.copy(synthesisOptions = v) } } }
         viewModelScope.launch { settings.readerRoleEnabled.collect { v -> _uiState.update { it.copy(roleEnabled = v) } } }
     }
 
@@ -372,7 +373,7 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- 听书控制 ----
 
-    fun startListening(paragraphIndex: Int = 0) {
+    fun startListening(paragraphIndex: Int = 0, cacheOnly: Boolean = false) {
         val state = _uiState.value
         val book = state.currentBook ?: return
         val activeSnapshot = ReaderPlaybackService.getPlaybackSnapshot(book.uri)
@@ -385,6 +386,8 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
         }
         val intent = Intent(getApplication(), ReaderPlaybackService::class.java).apply {
             action = ReaderPlaybackService.ACTION_START
+            putExtra(ReaderPlaybackService.EXTRA_SYNTHESIS_OPTIONS, com.google.gson.Gson().toJson(state.synthesisOptions))
+            putExtra(ReaderPlaybackService.EXTRA_CACHE_ONLY, cacheOnly)
             putExtra(ReaderPlaybackService.EXTRA_URI, book.uri)
             putExtra(ReaderPlaybackService.EXTRA_TITLE, book.title)
             putExtra(ReaderPlaybackService.EXTRA_VOICE, state.selectedVoiceId)
@@ -410,7 +413,7 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
                 isListening = true,
                 isPaused = false,
                 selectedParagraphIndex = null,
-                statusText = if (paragraphIndex > 0) "已从选中段落开始听书" else "听书已开始"
+                statusText = if (cacheOnly) "预缓存进行中，可在通知栏暂停或停止" else if (paragraphIndex > 0) "已从选中段落开始听书" else "听书已开始"
             )
         }
     }
@@ -441,6 +444,11 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
             _uiState.update { it.copy(isListening = false, isPaused = false) }
             return
         }
+        if (snapshot.isCaching) {
+            _uiState.update { it.copy(isListening = true, isPaused = snapshot.isPaused,
+                statusText = "${if (snapshot.isPaused) "预缓存已暂停" else "预缓存中"} · 第${snapshot.chapterIndex + 1}章，第${snapshot.pageIndex + 1}页") }
+            return
+        }
         val state = _uiState.value
         _uiState.update {
             it.copy(
@@ -449,13 +457,16 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
                 statusText = if (snapshot.isPaused) "听书已暂停" else "听书播放中"
             )
         }
+        val pageIndex = snapshot.chapterOffset?.let {
+            com.voxengine.reader.ReaderSpeechPlanner.displayPosition(pagesFor(snapshot.chapterIndex), it).first
+        } ?: snapshot.pageIndex
         if (snapshot.chapterIndex in state.chapters.indices &&
-            (snapshot.chapterIndex != state.chapterIndex || snapshot.pageIndex != state.pageIndex)
+            (snapshot.chapterIndex != state.chapterIndex || pageIndex != state.pageIndex)
         ) {
             setPosition(
                 snapshot.chapterIndex,
-                snapshot.pageIndex,
-                forward = snapshot.chapterIndex > state.chapterIndex || snapshot.pageIndex > state.pageIndex
+                pageIndex,
+                forward = snapshot.chapterIndex > state.chapterIndex || pageIndex > state.pageIndex
             )
         }
     }
@@ -511,7 +522,52 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun removeCharacterVoice(name: String) =
-        updateRoleProfile { it.copy(characters = it.characters - name) }
+        updateRoleProfile { it.copy(characters = it.characters - name, matchRules = it.matchRules.filter { rule -> rule.character != name }) }
+
+    fun setSynthesisOptions(options: com.voxengine.reader.ReaderSynthesisOptions) {
+        val bounded = options.bounded()
+        _uiState.update { it.copy(synthesisOptions = bounded) }
+        viewModelScope.launch { settings.updateReaderSynthesisOptions(bounded) }
+    }
+
+    fun cacheChapters() = startListening(cacheOnly = true)
+
+    fun setMatchRules(rules: List<com.voxengine.reader.RoleMatchRule>) =
+        updateRoleProfile { it.copy(matchRules = rules) }
+
+    fun importRoleProfile(uri: Uri) = viewModelScope.launch {
+        val bookUri = _uiState.value.currentBook?.uri ?: return@launch
+        runCatching {
+            val profile = withContext(Dispatchers.IO) {
+                val json = getApplication<Application>().contentResolver.openInputStream(uri)?.use {
+                    val buffer = java.io.ByteArrayOutputStream()
+                    val block = ByteArray(8192)
+                    while (buffer.size() <= 1_000_000) {
+                        val count = it.read(block, 0, minOf(block.size, 1_000_001 - buffer.size()))
+                        if (count < 0) break
+                        buffer.write(block, 0, count)
+                    }
+                    val bytes = buffer.toByteArray()
+                    require(bytes.size <= 1_000_000) { "角色配置文件过大" }
+                    bytes.toString(Charsets.UTF_8)
+                } ?: error("无法读取配置文件")
+                com.voxengine.reader.RoleProfileJson.import(json)
+            }
+            if (_uiState.value.currentBook?.uri == bookUri) updateRoleProfile { profile }
+            _uiState.update { it.copy(statusText = "已导入角色与规则") }
+        }.onFailure { error -> _uiState.update { it.copy(statusText = "导入失败：${error.message}") } }
+    }
+
+    fun exportRoleProfile(uri: Uri) = viewModelScope.launch {
+        val json = com.voxengine.reader.RoleProfileJson.serialize(_uiState.value.roleProfile)
+        runCatching {
+            withContext(Dispatchers.IO) {
+                getApplication<Application>().contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray(Charsets.UTF_8)) }
+                    ?: error("无法写入配置文件")
+            }
+            _uiState.update { it.copy(statusText = "已导出角色与规则") }
+        }.onFailure { error -> _uiState.update { it.copy(statusText = "导出失败：${error.message}") } }
+    }
 
     private fun updateRoleProfile(transform: (com.voxengine.reader.RoleProfile) -> com.voxengine.reader.RoleProfile) {
         val updated = transform(_uiState.value.roleProfile)
@@ -566,6 +622,7 @@ data class ReaderUiState(
     val isPaused: Boolean = false,
     val selectedParagraphIndex: Int? = null,
     val isEngineConfigured: Boolean = false,
+    val synthesisOptions: com.voxengine.reader.ReaderSynthesisOptions = com.voxengine.reader.ReaderSynthesisOptions(),
     val readerGapMs: Int = 700,
     val readerSleepMinutes: Int = 0,
     val readerStopAfterChapters: Int = 0,

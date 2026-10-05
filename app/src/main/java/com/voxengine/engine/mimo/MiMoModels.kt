@@ -52,7 +52,8 @@ class MiMoTTSClient(
         model: String = MODEL_PRESET,
         style: String? = null,
         optimizeTextPreview: Boolean = false,
-        temperature: Float? = null
+        temperature: Float? = null,
+        context: String? = null
     ): SynthesisResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
         val content = text
@@ -76,8 +77,11 @@ class MiMoTTSClient(
             }
         }
 
+        val contextInstruction = context?.takeIf { it.isNotBlank() }?.let {
+            "以下是小说上下文，仅用于理解人物、情绪与语气，不要朗读或复述。只朗读 assistant 消息中的正文。\n<上下文>\n${it.take(1200)}\n</上下文>"
+        }
         val messages = mutableListOf(
-            Message(role = "user", content = userContent)
+            Message(role = "user", content = listOfNotNull(userContent, contextInstruction).filter { it.isNotBlank() }.joinToString("\n"))
         )
         if (assistantContent != null) {
             messages.add(Message(role = "assistant", content = assistantContent))

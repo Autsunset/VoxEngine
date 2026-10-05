@@ -42,6 +42,7 @@ class SettingsRepository(private val context: Context) {
     val readerRetryBaseDelayMs: Flow<Int> = context.dataStore.data.map { it[KEY_READER_RETRY_BASE_DELAY_MS] ?: 2000 }
     // 分角色朗读档：旁白 / 对话 / 具名角色各自的音色与可选风格。
     // 全局开关（所有书共用）。
+    val readerSynthesisOptions: Flow<com.voxengine.reader.ReaderSynthesisOptions> = context.dataStore.data.map { com.voxengine.reader.ReaderSynthesisOptions.parse(it[KEY_READER_SYNTHESIS_OPTIONS]) }
     val readerRoleEnabled: Flow<Boolean> = context.dataStore.data.map { it[KEY_READER_ROLE_ENABLED] ?: false }
     // 按书的 URI 存储角色档（Map<String, String> JSON），不同书独立不冲突。
     // 读取时优先取当前书的档，未命中则回落到旧的全局 KEY_READER_ROLE_PROFILE_JSON（如有则迁移）。
@@ -119,6 +120,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun updateReaderConservativeRequestIntervalMs(intervalMs: Int) { context.dataStore.edit { it[KEY_READER_CONSERVATIVE_REQUEST_INTERVAL_MS] = intervalMs } }
     suspend fun updateReaderRetryCount(count: Int) { context.dataStore.edit { it[KEY_READER_RETRY_COUNT] = count } }
     suspend fun updateReaderRetryBaseDelayMs(delayMs: Int) { context.dataStore.edit { it[KEY_READER_RETRY_BASE_DELAY_MS] = delayMs } }
+    suspend fun updateReaderSynthesisOptions(options: com.voxengine.reader.ReaderSynthesisOptions) { context.dataStore.edit { it[KEY_READER_SYNTHESIS_OPTIONS] = com.google.gson.Gson().toJson(options.bounded()) } }
     suspend fun updateReaderRoleEnabled(enabled: Boolean) { context.dataStore.edit { it[KEY_READER_ROLE_ENABLED] = enabled } }
 
     fun getEngineConfig(engineId: String, key: String): Flow<String> {
@@ -149,6 +151,7 @@ class SettingsRepository(private val context: Context) {
         private val KEY_READER_CONSERVATIVE_REQUEST_INTERVAL_MS = intPreferencesKey("reader_conservative_request_interval_ms")
         private val KEY_READER_RETRY_COUNT = intPreferencesKey("reader_retry_count")
         private val KEY_READER_RETRY_BASE_DELAY_MS = intPreferencesKey("reader_retry_base_delay_ms")
+        private val KEY_READER_SYNTHESIS_OPTIONS = stringPreferencesKey("reader_synthesis_options")
         private val KEY_READER_ROLE_ENABLED = booleanPreferencesKey("reader_role_enabled")
         // 旧全局角色档（v2026.06.27.4 前），保留用于向后兼容迁移
         private val KEY_READER_ROLE_PROFILE_JSON = stringPreferencesKey("reader_role_profile_json")

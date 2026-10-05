@@ -28,7 +28,8 @@ class EdgeTTSEngine(
         text: String,
         voice: String,
         style: String?,
-        optimizeTextPreview: Boolean
+        optimizeTextPreview: Boolean,
+        context: String?
     ): SynthesisResult = withContext(Dispatchers.IO) {
         val speechText = SpeechTextNormalizer.normalize(text)
         val resolvedVoice = resolveVoiceId(voice)
@@ -55,18 +56,20 @@ class EdgeTTSEngine(
                 audioData = cached,
                 format = AudioFormat.WAV,
                 sampleRate = AudioUtils.getWavSampleRate(cached),
-                elapsedMs = 0
+                elapsedMs = 0,
+                persisted = AudioCache.isPersisted(cacheKey)
             )
         }
 
         val startTime = System.currentTimeMillis()
         val wav = client.synthesize(speechText, resolvedVoice)
-        AudioCache.put(cacheKey, wav)
+        val persisted = AudioCache.put(cacheKey, wav)
         SynthesisResult(
             audioData = wav,
             format = AudioFormat.WAV,
             sampleRate = AudioUtils.getWavSampleRate(wav),
-            elapsedMs = System.currentTimeMillis() - startTime
+            elapsedMs = System.currentTimeMillis() - startTime,
+            persisted = persisted
         )
     }
 

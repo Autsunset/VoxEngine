@@ -36,14 +36,12 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
-
-private typealias PlaybackPosition = ReaderPlaybackPlanner.Position
-private typealias ChunkKey = ReaderPlaybackPlanner.ChunkKey
 
 data class PlaybackSnapshot(
     val uri: String,
@@ -51,7 +49,9 @@ data class PlaybackSnapshot(
     val pageIndex: Int,
     val paragraphIndex: Int,
     val isListening: Boolean,
-    val isPaused: Boolean
+    val isPaused: Boolean,
+    val isCaching: Boolean = false,
+    val chapterOffset: Int? = null
 )
 
 class ReaderPlaybackService : Service() {
@@ -137,7 +137,9 @@ class ReaderPlaybackService : Service() {
             retryBaseDelayMs = intent.getIntExtra(EXTRA_RETRY_BASE_DELAY_MS, DEFAULT_RETRY_BASE_DELAY_MS).coerceIn(500, 15_000).toLong(),
             // 分角色朗读档：旁白/对话/具名角色各自的音色与可选风格；未开启时仍透传，由 roleEnabled 控制。
             roleEnabled = intent.getBooleanExtra(EXTRA_ROLE_ENABLED, false),
-            roleProfile = roleProfile
+            roleProfile = roleProfile,
+            synthesisOptions = ReaderSynthesisOptions.parse(intent.getStringExtra(EXTRA_SYNTHESIS_OPTIONS)),
+            cacheOnly = intent.getBooleanExtra(EXTRA_CACHE_ONLY, false)
         )
         playbackJob?.cancel()
         currentTrack = null
@@ -207,149 +209,102 @@ class ReaderPlaybackService : Service() {
         // 分角色开启时，旁白/对话/各角色音色可能各异；预取所有可能用到的音色的类型，决定是否需要节流。
         val voiceConservative = buildVoiceConservativeMap(playbackState, db)
 
-        var position = normalizePosition(chapters, PlaybackPosition(playbackState.chapterIndex, playbackState.pageIndex))
-        val startPosition = position
-        var finishedChapters = 0
-        val audioCache = mutableMapOf<ChunkKey, Deferred<Result<AudioChunk>>>()
-        var prefetchTail: Deferred<Result<AudioChunk>>? = null
-        var playbackFailed = false
-        val nextChapterPrefetchPagesByChapter = mutableMapOf<Int, Int>()
-
-        // 预取协程挂在本 coroutineScope 下：取消播放时在飞请求随之取消（防泄漏），
-        // 而调度用 scope.async 立即返回，预取与播放重叠。
-        // 勿改回 coroutineScope{async}：coroutineScope 会等子协程合成完才返回，预取退化为同步串行。
-        coroutineScope {
-            val prefetchScope = this
-            while (currentCoroutineContext().isActive) {
-                val pos = position ?: break
-                if (playbackState.stopAtMillis > 0 && System.currentTimeMillis() >= playbackState.stopAtMillis) break
-                if (playbackState.stopAfterChapters > 0 && finishedChapters >= playbackState.stopAfterChapters) break
-
-                playbackState.chapterIndex = pos.chapterIndex
-                playbackState.pageIndex = pos.pageIndex
-                playbackState.paragraphIndex = if (pos == startPosition) playbackState.paragraphIndex else 0
-                sendProgress(pos.chapterIndex, pos.pageIndex, playbackState.paragraphIndex)
-                val chapter = chapters[pos.chapterIndex]
-                val pages = pagesForPlayback(chapters, pos.chapterIndex, playbackState)
-                if (pages.getOrNull(pos.pageIndex) == null) break
-                val startParagraphIndex = if (pos == startPosition) playbackState.paragraphIndex else 0
-                updateNotification("${chapter.title} · 第${pos.pageIndex + 1}页 合成中", true)
-
-                val nextPosition = nextPosition(chapters, pos)
-                val nextChapterPrefetchPageCount = nextChapterPrefetchPagesByChapter[pos.chapterIndex] ?: 0
-                prefetchTail = schedulePrefetchWindow(
-                    prefetchScope = prefetchScope,
-                    chapters = chapters,
-                    currentPosition = pos,
-                    startParagraphIndex = startParagraphIndex,
-                    nextChapterPrefetchPageCount = nextChapterPrefetchPageCount,
-                    playbackState = playbackState,
-                    engine = engine,
-                    voiceConservative = voiceConservative,
-                    audioCache = audioCache,
-                    prefetchTail = prefetchTail
-                )
-
-                val currentChunks = chunkKeysForPlayback(chapters, pos, playbackState, startParagraphIndex)
-                if (currentChunks.isEmpty()) {
-                    // 整页无可朗读内容（如纯符号分隔行经 planner 过滤后为空），跳过到下一页，而非中止整本播放。
-                    LogManager.appendLog("I", TAG, "Page ${pos.chapterIndex}.${pos.pageIndex} has no speakable content, skipping")
-                    position = nextPosition
-                    continue
-                }
-
-                updateNotification("${chapter.title} · 第${pos.pageIndex + 1}页", true)
-                var pageFailed = false
-                var lastProgressParagraphIndex = -1
-                for (index in currentChunks.indices) {
-                    val (key, roleChunk) = currentChunks[index]
-                    val nextKey = currentChunks.getOrNull(index + 1)?.first
-                    while (currentCoroutineContext().isActive && isPaused) delay(150)
-                    if (!currentCoroutineContext().isActive) break
-
-                    val (resolvedVoice, resolvedStyle) = resolveAssignment(playbackState, roleChunk)
-                    val conservativeForChunk = voiceConservative[resolvedVoice] ?: false
-                    val preparedResult = audioCache[key]?.await()
-                    audioCache.remove(key)
-                    var chunk = preparedResult?.getOrNull()
-                    if (chunk == null) {
-                        val preparedError = preparedResult?.exceptionOrNull()
-                        if (preparedError != null) {
-                            LogManager.appendLog("W", TAG, "Paragraph " + key.paragraphIndex + "." + key.chunkIndex + " prefetch unavailable, synthesizing inline: " + preparedError.message)
-                        } else {
-                            LogManager.appendLog("W", TAG, "Paragraph " + key.paragraphIndex + "." + key.chunkIndex + " prefetch missing, synthesizing inline")
+        val firstChapter = playbackState.chapterIndex.coerceIn(chapters.indices)
+        val cacheEnd = minOf(chapters.size, firstChapter + playbackState.synthesisOptions.cacheChapters)
+        val initialPages = pagesForPlayback(chapters, firstChapter, playbackState)
+        val startOffset = if (playbackState.cacheOnly) 0 else ReaderSpeechPlanner.offsetFor(
+            initialPages, playbackState.pageIndex, playbackState.paragraphIndex
+        )
+        var completedChapters = 0
+        for (chapterIndex in firstChapter until (if (playbackState.cacheOnly) cacheEnd else chapters.size)) {
+            if (!playbackState.cacheOnly && playbackState.stopAfterChapters > 0 && completedChapters >= playbackState.stopAfterChapters) break
+            val chapter = chapters[chapterIndex]
+            val allChunks = ReaderSpeechPlanner.build(chapter.content, playbackState.roleEnabled, playbackState.roleProfile, playbackState.synthesisOptions)
+            val offset = if (chapterIndex == firstChapter) startOffset else 0
+            val chunks = allChunks.filter { it.end > offset }
+            coroutineScope {
+                val audio = mutableMapOf<Int, Deferred<Result<AudioChunk>>>()
+                var tail: Deferred<Result<AudioChunk>>? = null
+                fun schedule(start: Int) {
+                    val end = ReaderSpeechPlanner.windowEnd(chunks, start, playbackState.synthesisOptions.bufferPages * playbackState.pageTargetLength)
+                    for (index in start until end) {
+                        if (index in audio) continue
+                        val chunk = chunks[index]
+                        val (voice, style) = resolveAssignment(playbackState, chunk.speech)
+                        val conservative = voiceConservative[voice] == true
+                        val previous = tail
+                        val deferred = async(Dispatchers.IO) {
+                            if (conservative) previous?.await()
+                            try {
+                                prefetchSemaphore.withPermit {
+                                    Result.success(synthesizeParagraph(engine, chunk.speech.text, voice, style,
+                                        chunk.paragraphIndex, conservative, playbackState.conservativeRequestIntervalMs,
+                                        playbackState.retryCount, playbackState.retryBaseDelayMs, chunk.context))
+                                }
+                            } catch (e: CancellationException) { throw e
+                            } catch (e: Exception) { Result.failure(e) }
                         }
-                        updateNotification(chapter.title + " · 第" + (pos.pageIndex + 1) + "页 补合成中", true)
-                        chunk = try {
-                            synthesizeParagraph(
-                                engine,
-                                roleChunk.text,
-                                resolvedVoice,
-                                resolvedStyle,
-                                key.paragraphIndex,
-                                conservativeForChunk,
-                                playbackState.conservativeRequestIntervalMs,
-                                playbackState.retryCount,
-                                playbackState.retryBaseDelayMs
-                            )
-                        } catch (error: CancellationException) {
-                            throw error
-                        } catch (error: Throwable) {
-                            LogManager.appendLog("E", TAG, "Paragraph " + key.paragraphIndex + "." + key.chunkIndex + " inline synthesis failed: " + error.message)
-                            updateNotification(com.voxengine.util.TtsErrors.friendly(error), false)
-                            pageFailed = true
-                            playbackFailed = true
-                            null
-                        }
-                    }
-                    if (chunk == null) break
-                    playbackState.paragraphIndex = chunk.paragraphIndex
-                    if (chunk.paragraphIndex != lastProgressParagraphIndex) {
-                        lastProgressParagraphIndex = chunk.paragraphIndex
-                        sendProgress(pos.chapterIndex, pos.pageIndex, chunk.paragraphIndex)
-                    }
-                    runCatching { playAudioChunk(chunk.audioData) }
-                        .onFailure { error ->
-                            LogManager.appendLog("E", TAG, "Audio playback failed: ${error.message}")
-                            updateNotification("音频播放失败: ${com.voxengine.util.TtsErrors.friendly(error)}", false)
-                            pageFailed = true
-                            playbackFailed = true
-                        }
-                    if (pageFailed) break
-                    maybePersistProgress(db, playbackState.uri, pos.chapterIndex, pos.pageIndex, chunk.paragraphIndex)
-                    if (playbackState.gapMs > 0 && nextKey?.paragraphIndex != key.paragraphIndex) {
-                        delay(playbackState.gapMs)
+                        audio[index] = deferred
+                        tail = deferred
                     }
                 }
-                if (pageFailed) break
-                // 一页完整播完后保存“下一个未播位置”；否则中断/重启会重复整页。
-                if (nextPosition != null) {
-                    persistProgress(db, playbackState.uri, nextPosition.chapterIndex, nextPosition.pageIndex, 0)
-                } else {
-                    persistProgress(
-                        db,
-                        playbackState.uri,
-                        pos.chapterIndex,
-                        pos.pageIndex,
-                        pages[pos.pageIndex].paragraphs.size
-                    )
+                try {
+                    schedule(0)
+                    for ((index, chunk) in chunks.withIndex()) {
+                        while (isPaused && currentCoroutineContext().isActive) delay(150)
+                        currentCoroutineContext().ensureActive()
+                        if (!playbackState.cacheOnly && playbackState.stopAtMillis > 0 && System.currentTimeMillis() >= playbackState.stopAtMillis) break
+                        val pages = pagesForPlayback(chapters, chapterIndex, playbackState)
+                        val (pageIndex, paragraphIndex) = ReaderSpeechPlanner.displayPosition(pages, chunk.start)
+                        sendProgress(chapterIndex, pageIndex, paragraphIndex, chunk.start)
+                        updateNotification(if (playbackState.cacheOnly) {
+                            "预缓存 ${chapterIndex - firstChapter + 1}/${cacheEnd - firstChapter}章 · ${index + 1}/${chunks.size}段"
+                        } else "${chapter.title} · 第${pageIndex + 1}页", true)
+                        val preparedResult = audio.remove(index)?.await() ?: error("缺少待合成片段")
+                        var prepared = preparedResult.getOrElse { error ->
+                            if (playbackState.cacheOnly) throw error
+                            LogManager.appendLog("W", TAG, "Prefetch failed; retrying current chunk: ${error.message}")
+                            val (voice, style) = resolveAssignment(playbackState, chunk.speech)
+                            synthesizeParagraph(engine, chunk.speech.text, voice, style, chunk.paragraphIndex,
+                                voiceConservative[voice] == true, playbackState.conservativeRequestIntervalMs,
+                                playbackState.retryCount, playbackState.retryBaseDelayMs, chunk.context)
+                        }
+                        // Refill before playback, allowing network work to overlap this audio.
+                        schedule(index + 1)
+                        if (playbackState.cacheOnly) {
+                            check(prepared.persisted) { "音频无法保存到磁盘，请检查剩余空间后重新预缓存" }
+                            continue
+                        }
+                        if (index == 0 && offset > chunk.start) {
+                            // Seeking inside a cached chunk synthesizes only the selected suffix.
+                            val skip = ((offset - chunk.start).toLong() * chunk.speech.text.length /
+                                (chunk.end - chunk.start).coerceAtLeast(1)).toInt().coerceIn(0, chunk.speech.text.lastIndex)
+                            val (voice, style) = resolveAssignment(playbackState, chunk.speech)
+                            prepared = synthesizeParagraph(engine, chunk.speech.text.drop(skip), voice, style,
+                                chunk.paragraphIndex, voiceConservative[voice] == true,
+                                playbackState.conservativeRequestIntervalMs, playbackState.retryCount,
+                                playbackState.retryBaseDelayMs, chunk.context)
+                        }
+                        playAudioChunk(prepared.audioData)
+                        maybePersistProgress(db, playbackState.uri, chapterIndex, pageIndex, paragraphIndex)
+                        if (playbackState.gapMs > 0 && chunks.getOrNull(index + 1)?.paragraphIndex != chunk.paragraphIndex) delay(playbackState.gapMs)
+                    }
+                } finally {
+                    audio.values.forEach { it.cancel() }
+                    audio.clear()
                 }
-                nextChapterPrefetchPagesByChapter[pos.chapterIndex] = nextChapterPrefetchPageCount + 1
-
-                if (nextPosition != null && nextPosition.chapterIndex != pos.chapterIndex) {
-                    finishedChapters += 1
-                }
-                position = nextPosition
             }
-            // 退出循环后取消未消费的预取，否则 coroutineScope 会等它们全部合成完才返回，
-            // 结束/停止会被在飞请求拖住。
-            audioCache.values.forEach { it.cancel() }
-            audioCache.clear()
+            if (!playbackState.cacheOnly && playbackState.stopAtMillis > 0 && System.currentTimeMillis() >= playbackState.stopAtMillis) break
+            completedChapters++
+            if (!playbackState.cacheOnly) {
+                if (chapterIndex < chapters.lastIndex) persistProgress(db, playbackState.uri, chapterIndex + 1, 0, 0)
+                else {
+                    val pages = pagesForPlayback(chapters, chapterIndex, playbackState)
+                    persistProgress(db, playbackState.uri, chapterIndex, pages.lastIndex.coerceAtLeast(0), pages.lastOrNull()?.paragraphs?.size ?: 0)
+                }
+            }
         }
-
-        if (!playbackFailed) {
-            updateNotification("听书已结束", false)
-        }
+        updateNotification(if (playbackState.cacheOnly) "已缓存 $completedChapters 章，可直接听书" else "听书已结束", false)
         finishPlayback()
     }
 
@@ -364,132 +319,6 @@ class ReaderPlaybackService : Service() {
         updateMediaPlaybackState()
         stopForeground(STOP_FOREGROUND_DETACH)
         stopSelf()
-    }
-
-    private fun schedulePrefetchWindow(
-        prefetchScope: CoroutineScope,
-        chapters: List<TxtChapter>,
-        currentPosition: PlaybackPosition,
-        startParagraphIndex: Int,
-        nextChapterPrefetchPageCount: Int,
-        playbackState: PlaybackState,
-        engine: TTSEngine,
-        voiceConservative: Map<String, Boolean>,
-        audioCache: MutableMap<ChunkKey, Deferred<Result<AudioChunk>>>,
-        prefetchTail: Deferred<Result<AudioChunk>>?
-    ): Deferred<Result<AudioChunk>>? {
-        val window: List<Pair<ChunkKey, ReaderPlaybackPlanner.RoleChunk>> =
-            if (playbackState.roleEnabled) {
-                ReaderPlaybackPlanner.buildPrefetchWindowRoleAware(
-                    chapters = chapters,
-                    currentPosition = currentPosition,
-                    startParagraphIndex = startParagraphIndex,
-                    nextChapterPrefetchPageCount = nextChapterPrefetchPageCount,
-                    pageTargetLength = playbackState.pageTargetLength,
-                    maxChunks = ReaderPlaybackPlanner.MAX_PREFETCH_AHEAD,
-                    pagesForChapter = pageProvider(chapters, playbackState),
-                    configuredNames = playbackState.roleProfile.characters.keys
-                )
-            } else {
-                ReaderPlaybackPlanner.buildPrefetchWindow(
-                    chapters = chapters,
-                    currentPosition = currentPosition,
-                    startParagraphIndex = startParagraphIndex,
-                    nextChapterPrefetchPageCount = nextChapterPrefetchPageCount,
-                    pageTargetLength = playbackState.pageTargetLength,
-                    maxChunks = ReaderPlaybackPlanner.MAX_PREFETCH_AHEAD,
-                    pagesForChapter = pageProvider(chapters, playbackState)
-                ).map { (key, text) ->
-                    key to ReaderPlaybackPlanner.RoleChunk(SpeechRole.NARRATION, null, text)
-                }
-            }
-        var tail = prefetchTail
-        for ((key, roleChunk) in window) {
-            if (audioCache.containsKey(key)) continue
-            val (resolvedVoice, resolvedStyle) = resolveAssignment(playbackState, roleChunk)
-            val conservative = voiceConservative[resolvedVoice] ?: false
-            val previous = tail
-            // 用调用方传入的播放 scope 启动:立即返回、取消联动。
-            // clone/design 仍串行（await previous + throttle）；预设/Edge 有界并发。
-            val deferred = prefetchScope.async(Dispatchers.IO) {
-                if (conservative) previous?.await()
-                try {
-                    if (conservative) {
-                        Result.success(
-                            synthesizeParagraph(
-                                engine,
-                                roleChunk.text,
-                                resolvedVoice,
-                                resolvedStyle,
-                                key.paragraphIndex,
-                                true,
-                                playbackState.conservativeRequestIntervalMs,
-                                playbackState.retryCount,
-                                playbackState.retryBaseDelayMs
-                            )
-                        )
-                    } else {
-                        prefetchSemaphore.withPermit {
-                            Result.success(
-                                synthesizeParagraph(
-                                    engine,
-                                    roleChunk.text,
-                                    resolvedVoice,
-                                    resolvedStyle,
-                                    key.paragraphIndex,
-                                    false,
-                                    playbackState.conservativeRequestIntervalMs,
-                                    playbackState.retryCount,
-                                    playbackState.retryBaseDelayMs
-                                )
-                            )
-                        }
-                    }
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Throwable) {
-                    Result.failure(error)
-                }
-            }
-            audioCache[key] = deferred
-            // conservative 用 tail 串行；非 conservative 也推进 tail，便于后续 clone 段等待前序收尾。
-            tail = deferred
-        }
-        return tail
-    }
-
-    private fun pageProvider(
-        chapters: List<TxtChapter>,
-        playbackState: PlaybackState
-    ): (Int) -> List<TxtPage> = { chapterIndex -> pagesForPlayback(chapters, chapterIndex, playbackState) }
-
-    private fun chunkKeysForPlayback(
-        chapters: List<TxtChapter>,
-        position: PlaybackPosition,
-        playbackState: PlaybackState,
-        startParagraphIndex: Int
-    ): List<Pair<ChunkKey, ReaderPlaybackPlanner.RoleChunk>> {
-        // 角色开启：按旁白/对话切分；关闭：退化为单 NARRATION（与历史 chunking 完全一致）。
-        return if (playbackState.roleEnabled) {
-            ReaderPlaybackPlanner.chunkKeysForPlaybackRoleAware(
-                chapters = chapters,
-                position = position,
-                startParagraphIndex = startParagraphIndex,
-                pageTargetLength = playbackState.pageTargetLength,
-                pagesForChapter = pageProvider(chapters, playbackState),
-                configuredNames = playbackState.roleProfile.characters.keys
-            )
-        } else {
-            ReaderPlaybackPlanner.chunkKeysForPlayback(
-                chapters = chapters,
-                position = position,
-                startParagraphIndex = startParagraphIndex,
-                pageTargetLength = playbackState.pageTargetLength,
-                pagesForChapter = pageProvider(chapters, playbackState)
-            ).map { (key, text) ->
-                key to ReaderPlaybackPlanner.RoleChunk(SpeechRole.NARRATION, null, text)
-            }
-        }
     }
 
     /** 解析片段应使用的音色与风格。voice 经 [RoleSegmenter.voiceFor]（已测）；风格按槽位取，未设回落主风格。 */
@@ -545,18 +374,22 @@ class ReaderPlaybackService : Service() {
         conservativeSynthesis: Boolean,
         conservativeRequestIntervalMs: Long,
         retryCount: Int,
-        retryBaseDelayMs: Long
+        retryBaseDelayMs: Long,
+        context: String? = null
     ): AudioChunk {
-        val audioData = com.voxengine.util.RetryPolicy.withRetry(
+        if (engine is com.voxengine.engine.mimo.MiMoEngine) {
+            engine.getCachedSynthesis(paragraph, voice, style, context)?.let { return AudioChunk(paragraphIndex, it.audioData, it.persisted) }
+        }
+        val result = com.voxengine.util.RetryPolicy.withRetry(
             retryCount = retryCount,
             baseDelayMs = retryBaseDelayMs,
             beforeAttempt = { if (conservativeSynthesis) conservativeThrottle.waitTurn(conservativeRequestIntervalMs) },
             onRetry = { attempt, error ->
                 LogManager.appendLog("W", TAG, "Paragraph $paragraphIndex synthesis retry $attempt: ${error.message}")
             },
-            block = { engine.synthesize(paragraph, voice, style).audioData }
+            block = { engine.synthesize(paragraph, voice, style, context = context) }
         )
-        return AudioChunk(paragraphIndex, audioData)
+        return AudioChunk(paragraphIndex, result.audioData, result.persisted)
     }
 
     private fun pagesForPlayback(
@@ -569,26 +402,6 @@ class ReaderPlaybackService : Service() {
                 LogManager.appendLog("W", TAG, "Reader fallback pagination used: chapter=$chapterIndex pages=${it.size}")
             }
         }
-
-    private fun normalizePosition(chapters: List<TxtChapter>, position: PlaybackPosition): PlaybackPosition? {
-        val playbackState = state ?: return null
-        return ReaderPlaybackPlanner.normalizePosition(
-            chapters = chapters,
-            position = position,
-            pageTargetLength = playbackState.pageTargetLength,
-            pagesForChapter = pageProvider(chapters, playbackState)
-        )
-    }
-
-    private fun nextPosition(chapters: List<TxtChapter>, position: PlaybackPosition): PlaybackPosition? {
-        val playbackState = state ?: return null
-        return ReaderPlaybackPlanner.nextPosition(
-            chapters = chapters,
-            position = position,
-            pageTargetLength = playbackState.pageTargetLength,
-            pagesForChapter = pageProvider(chapters, playbackState)
-        )
-    }
 
     private suspend fun playAudioChunk(wavData: ByteArray) = withContext(Dispatchers.IO) {
         val wav = AudioUtils.parseWav(wavData)
@@ -799,11 +612,12 @@ class ReaderPlaybackService : Service() {
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text, isPlaying))
     }
 
-    private fun sendProgress(chapterIndex: Int, pageIndex: Int, paragraphIndex: Int) {
+    private fun sendProgress(chapterIndex: Int, pageIndex: Int, paragraphIndex: Int, chapterOffset: Int? = null) {
         val playbackState = state ?: return
         playbackState.chapterIndex = chapterIndex
         playbackState.pageIndex = pageIndex
         playbackState.paragraphIndex = paragraphIndex
+        playbackState.chapterOffset = chapterOffset
         playbackSnapshotRef.set(
             PlaybackSnapshot(
                 uri = playbackState.uri,
@@ -811,13 +625,17 @@ class ReaderPlaybackService : Service() {
                 pageIndex = pageIndex,
                 paragraphIndex = paragraphIndex,
                 isListening = true,
-                isPaused = isPaused
+                isPaused = isPaused,
+                isCaching = playbackState.cacheOnly,
+                chapterOffset = chapterOffset
             )
         )
         sendBroadcast(
             Intent(ACTION_PROGRESS)
                 .setPackage(packageName)
                 .putExtra(EXTRA_URI, playbackState.uri)
+                .putExtra(EXTRA_CACHE_ONLY, playbackState.cacheOnly)
+                .putExtra(EXTRA_CHAPTER_OFFSET, chapterOffset ?: -1)
                 .putExtra(EXTRA_CHAPTER_INDEX, chapterIndex)
                 .putExtra(EXTRA_PAGE_INDEX, pageIndex)
                 .putExtra(EXTRA_PARAGRAPH_INDEX, paragraphIndex)
@@ -832,7 +650,9 @@ class ReaderPlaybackService : Service() {
             pageIndex = playbackState.pageIndex,
             paragraphIndex = playbackState.paragraphIndex,
             isListening = isListening,
-            isPaused = isListening && isPaused
+            isPaused = isListening && isPaused,
+            isCaching = playbackState.cacheOnly,
+            chapterOffset = playbackState.chapterOffset
         )
         if (isListening) {
             playbackSnapshotRef.set(snapshot)
@@ -848,6 +668,8 @@ class ReaderPlaybackService : Service() {
                 .putExtra(EXTRA_PARAGRAPH_INDEX, snapshot.paragraphIndex)
                 .putExtra(EXTRA_IS_LISTENING, snapshot.isListening)
                 .putExtra(EXTRA_IS_PAUSED, snapshot.isPaused)
+                .putExtra(EXTRA_CACHE_ONLY, snapshot.isCaching)
+                .putExtra(EXTRA_CHAPTER_OFFSET, snapshot.chapterOffset ?: -1)
         )
     }
 
@@ -983,11 +805,14 @@ class ReaderPlaybackService : Service() {
         val retryBaseDelayMs: Long,
         val roleEnabled: Boolean = false,
         val roleProfile: RoleProfile = RoleProfile(),
+        val synthesisOptions: ReaderSynthesisOptions = ReaderSynthesisOptions(),
+        val cacheOnly: Boolean = false,
         var speed: Float = 1.0f,
-        var chapterCount: Int = 0
+        var chapterCount: Int = 0,
+        var chapterOffset: Int? = null
     )
 
-    private data class AudioChunk(val paragraphIndex: Int, val audioData: ByteArray)
+    private data class AudioChunk(val paragraphIndex: Int, val audioData: ByteArray, val persisted: Boolean)
 
     companion object {
         const val ACTION_START = "com.voxengine.reader.START"
@@ -1007,6 +832,9 @@ class ReaderPlaybackService : Service() {
         fun getPlaybackSnapshot(uri: String? = null): PlaybackSnapshot? =
             playbackSnapshotRef.get()?.takeIf { uri == null || it.uri == uri }
 
+        const val EXTRA_CHAPTER_OFFSET = "chapter_offset"
+        const val EXTRA_SYNTHESIS_OPTIONS = "synthesis_options"
+        const val EXTRA_CACHE_ONLY = "cache_only"
         const val EXTRA_URI = "uri"
         const val EXTRA_TITLE = "title"
         const val EXTRA_VOICE = "voice"

@@ -17,8 +17,23 @@ data class RoleVoiceStyle(
 data class RoleProfile(
     val narration: RoleVoiceStyle = RoleVoiceStyle(),
     val dialogue: RoleVoiceStyle = RoleVoiceStyle(),
-    val characters: Map<String, RoleVoiceStyle> = emptyMap()
+    val characters: Map<String, RoleVoiceStyle> = emptyMap(),
+    val matchRules: List<RoleMatchRule> = emptyList()
 )
+
+/** Rules run in order before built-in speaker detection. Context never becomes spoken text. */
+data class RoleMatchRule(
+    val character: String = "",
+    val pattern: String = "",
+    val afterDialogue: Boolean = false,
+    val enabled: Boolean = true
+) {
+    fun validate() {
+        require(character.isNotBlank()) { "请填写目标角色名" }
+        require(pattern.isNotBlank() && pattern.length <= 512) { "规则需为 1–512 字符的正则表达式" }
+        Regex(pattern)
+    }
+}
 
 /** [RoleProfile] 的 JSON 序列化/反序列化（Gson）。ViewModel 写入、Service 解析共用。 */
 object RoleProfileJson {
@@ -28,6 +43,30 @@ object RoleProfileJson {
 
     fun parse(json: String?): RoleProfile {
         if (json.isNullOrBlank()) return RoleProfile()
-        return runCatching { gson.fromJson(json, RoleProfile::class.java) }.getOrNull() ?: RoleProfile()
+        return runCatching { import(json) }.getOrNull() ?: RoleProfile()
+    }
+
+    /** Strict import: malformed files must not silently overwrite the current configuration. */
+    fun import(json: String): RoleProfile {
+        require(json.length <= 1_000_000) { "角色配置文件过大" }
+        val root = com.google.gson.JsonParser.parseString(json)
+        require(root.isJsonObject && root.asJsonObject.entrySet().any {
+            it.key in setOf("narration", "dialogue", "characters", "matchRules")
+        }) { "不是角色配置文件" }
+        val profile = gson.fromJson(root, RoleProfile::class.java)
+        // Gson may supply null for explicit JSON null, including non-null Kotlin properties.
+        val narration = requireNotNull(profile.narration) { "旁白配置不能为空" }
+        val dialogue = requireNotNull(profile.dialogue) { "对话配置不能为空" }
+        val characters = requireNotNull(profile.characters) { "角色列表不能为空" }
+        val rules = requireNotNull(profile.matchRules) { "规则列表不能为空" }
+        require(characters.size <= 500 && rules.size <= 200) { "角色或规则数量过多" }
+        characters.forEach { (name, assignment) ->
+            require(name.isNotBlank() && assignment != null) { "角色配置无效" }
+        }
+        rules.forEach { rule ->
+            requireNotNull(rule).validate()
+            require(rule.character in characters) { "规则目标角色不存在：${rule.character}" }
+        }
+        return RoleProfile(narration, dialogue, characters, rules)
     }
 }

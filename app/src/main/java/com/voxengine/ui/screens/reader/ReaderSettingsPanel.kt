@@ -51,6 +51,13 @@ internal fun ReaderSettingsPanel(
     onDialogueStyleChange: (String) -> Unit,
     onCharacterSave: (String, String, String) -> Unit,
     onCharacterRemove: (String) -> Unit,
+    onRulesChange: (List<com.voxengine.reader.RoleMatchRule>) -> Unit,
+    onRoleImport: () -> Unit,
+    onRoleExport: () -> Unit,
+    synthesisOptions: com.voxengine.reader.ReaderSynthesisOptions,
+    onSynthesisOptionsChange: (com.voxengine.reader.ReaderSynthesisOptions) -> Unit,
+    onCacheChapters: () -> Unit,
+    canCache: Boolean,
     readerGapMs: Int,
     readerSleepMinutes: Int,
     readerStopAfterChapters: Int,
@@ -150,6 +157,20 @@ internal fun ReaderSettingsPanel(
                 onRemove = onCharacterRemove
             )
         }
+        RoleMatchRuleEditor(roleProfile, onRulesChange, onRoleImport, onRoleExport)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("段落上下文（MiMo）", modifier = Modifier.weight(1f))
+            Switch(synthesisOptions.contextEnabled, { onSynthesisOptionsChange(synthesisOptions.copy(contextEnabled = it)) })
+        }
+        Text("上下文只用于理解语气，不加入朗读正文。", style = MaterialTheme.typography.bodySmall)
+        Text("提前缓冲：${synthesisOptions.bufferPages} 页", style = MaterialTheme.typography.bodySmall)
+        Slider(synthesisOptions.bufferPages.toFloat(), { onSynthesisOptionsChange(synthesisOptions.copy(bufferPages = it.roundToInt())) }, valueRange = 1f..20f, steps = 18)
+        Text("单次合成上限：${synthesisOptions.chunkChars} 字（角色切换处仍分段）", style = MaterialTheme.typography.bodySmall)
+        Slider(synthesisOptions.chunkChars.toFloat(), { onSynthesisOptionsChange(synthesisOptions.copy(chunkChars = it.roundToInt())) }, valueRange = 180f..1800f)
+        Text("预缓存：从当前章开始 ${synthesisOptions.cacheChapters} 章", style = MaterialTheme.typography.bodySmall)
+        Slider(synthesisOptions.cacheChapters.toFloat(), { onSynthesisOptionsChange(synthesisOptions.copy(cacheChapters = it.roundToInt())) }, valueRange = 1f..100f, steps = 98)
+        androidx.compose.material3.OutlinedButton(onClick = onCacheChapters, enabled = canCache) { Text("开始预缓存") }
+        Text("预缓存使用当前音色、规则和上下文设置，会调用语音服务。音频保留 30 天，最多 2 GB；在通知栏可暂停或停止。修改音色或合成参数后需重新缓存。", style = MaterialTheme.typography.bodySmall)
         Text("段间间隔: ${readerGapMs}ms", style = MaterialTheme.typography.bodySmall)
         Slider(
             value = readerGapMs.toFloat(),

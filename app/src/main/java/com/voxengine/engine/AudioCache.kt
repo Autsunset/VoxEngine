@@ -3,6 +3,7 @@ package com.voxengine.engine
 import android.util.LruCache
 import com.voxengine.util.HexEncoding
 import java.security.MessageDigest
+import java.io.File
 
 /**
  * 音频缓存管理器
@@ -12,6 +13,9 @@ object AudioCache {
     private const val MAX_CACHE_BYTES = 32 * 1024 * 1024 // 32MB，按字节封顶避免大 WAV 撑爆内存
     private const val CACHE_TTL_MS = 5 * 60 * 1000L // 5 分钟
     private const val CACHE_VERSION = "reader-tts-v4"
+    private val diskCache by lazy {
+        FileAudioCache(File(com.voxengine.VoxEngineApplication.instance.cacheDir, "reader_audio"))
+    }
 
     private data class CacheEntry(
         val audioData: ByteArray,
@@ -34,9 +38,10 @@ object AudioCache {
         style: String?,
         engineId: String,
         voiceFingerprint: String = voice,
-        temperature: Float? = null
+        temperature: Float? = null,
+        context: String? = null
     ): String {
-        val raw = "$CACHE_VERSION|$engineId|$voiceFingerprint|$text|${style ?: ""}|t=${temperature ?: ""}"
+        val raw = "$CACHE_VERSION|$engineId|$voiceFingerprint|$text|${style ?: ""}|t=${temperature ?: ""}|context=${context.orEmpty()}"
         return md5(raw)
     }
 
@@ -44,22 +49,23 @@ object AudioCache {
      * 获取缓存的音频数据
      */
     fun get(key: String): ByteArray? {
-        val entry = cache.get(key) ?: return null
+        val entry = cache.get(key)
 
         // 检查是否过期
-        if (System.currentTimeMillis() - entry.timestamp > CACHE_TTL_MS) {
+        if (entry != null && System.currentTimeMillis() - entry.timestamp <= CACHE_TTL_MS) return entry.audioData
+        if (entry != null) {
             cache.remove(key)
-            return null
         }
-
-        return entry.audioData
+        return runCatching {
+            diskCache.get(key)?.also { cache.put(key, CacheEntry(it, System.currentTimeMillis())) }
+        }.getOrNull()
     }
 
-    /**
-     * 存储音频数据到缓存
-     */
-    fun put(key: String, audioData: ByteArray) {
+    fun isPersisted(key: String): Boolean = runCatching { diskCache.contains(key) }.getOrDefault(false)
+
+    fun put(key: String, audioData: ByteArray): Boolean {
         cache.put(key, CacheEntry(audioData, System.currentTimeMillis()))
+        return runCatching { diskCache.put(key, audioData); diskCache.contains(key) }.getOrDefault(false)
     }
 
     /**
@@ -67,6 +73,7 @@ object AudioCache {
      */
     fun clear() {
         cache.evictAll()
+        runCatching { diskCache.clear() }
     }
 
     /**

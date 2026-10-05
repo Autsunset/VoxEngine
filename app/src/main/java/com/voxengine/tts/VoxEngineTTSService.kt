@@ -89,6 +89,8 @@ class VoxEngineTTSService : TextToSpeechService() {
             Log.d(TAG, "Voice=$currentVoice, Style=$currentStyle, Parallel=$parallelSynthesis, Concurrency=$ttsConcurrency, Speed=$effectiveSpeed")
             LogManager.appendLog("D", TAG, "Voice=$currentVoice, Style=$currentStyle, Parallel=$parallelSynthesis, Concurrency=$ttsConcurrency, Speed=$effectiveSpeed")
             val style = if (currentStyle == "无") null else currentStyle
+            val synthesisOptions = runBlocking { s.readerSynthesisOptions.first() }
+            val context = text.take(1200).takeIf { synthesisOptions.contextEnabled }
 
             // 24kHz PCM16 单声道（MiMo 输出格式）。先用默认采样率 start，分段写出。
             var started = false
@@ -103,13 +105,13 @@ class VoxEngineTTSService : TextToSpeechService() {
             if (parallelSynthesis && engine is MiMoEngine) {
                 // 流式：分句有界并发，按序就绪即写出，首字延迟≈单句延迟。
                 runBlocking {
-                    engine.synthesizeStreaming(text, currentVoice, style, ttsConcurrency) { pcm ->
+                    engine.synthesizeStreaming(text, currentVoice, style, ttsConcurrency, context = context) { pcm ->
                         ensureStarted()
                         writePcmOrThrow(callback, applySpeed(pcm, 24000, effectiveSpeed))
                     }
                 }
             } else {
-                val result = runBlocking { engine.synthesize(text, currentVoice, style) }
+                val result = runBlocking { engine.synthesize(text, currentVoice, style, context = context) }
                 Log.d(TAG, "Got audio: ${result.audioData.size} bytes in ${result.elapsedMs}ms")
                 LogManager.appendLog("D", TAG, "Got audio: ${result.audioData.size} bytes in ${result.elapsedMs}ms")
                 val wav = AudioUtils.parseWav(result.audioData)

@@ -81,6 +81,13 @@ fun ReaderScreen(
         viewModel.importBooks(uris)
     }
 
+    val roleImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { viewModel.importRoleProfile(it) }
+    }
+    val roleExportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        uri?.let { viewModel.exportRoleProfile(it) }
+    }
+
     // 回前台时重新同步播放状态（服务可能在后台推进了进度）。
     DisposableEffect(lifecycleOwner, uiState.currentBook?.uri) {
         val observer = LifecycleEventObserver { _, event ->
@@ -137,7 +144,9 @@ fun ReaderScreen(
                             ReaderPlaybackService.EXTRA_IS_LISTENING,
                             intent.action == ReaderPlaybackService.ACTION_PROGRESS
                         ),
-                        isPaused = intent.getBooleanExtra(ReaderPlaybackService.EXTRA_IS_PAUSED, false)
+                        isPaused = intent.getBooleanExtra(ReaderPlaybackService.EXTRA_IS_PAUSED, false),
+                        isCaching = intent.getBooleanExtra(ReaderPlaybackService.EXTRA_CACHE_ONLY, false),
+                        chapterOffset = intent.getIntExtra(ReaderPlaybackService.EXTRA_CHAPTER_OFFSET, -1).takeIf { it >= 0 }
                     )
                 )
             }
@@ -231,6 +240,13 @@ fun ReaderScreen(
                 onDialogueStyleChange = { viewModel.setDialogueStyle(it) },
                 onCharacterSave = { name, voice, style -> viewModel.saveCharacterVoice(name, voice, style) },
                 onCharacterRemove = { name -> viewModel.removeCharacterVoice(name) },
+                onRulesChange = viewModel::setMatchRules,
+                onRoleImport = { roleImportLauncher.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
+                onRoleExport = { roleExportLauncher.launch("vox-role-rules.json") },
+                synthesisOptions = uiState.synthesisOptions,
+                onSynthesisOptionsChange = viewModel::setSynthesisOptions,
+                onCacheChapters = viewModel::cacheChapters,
+                canCache = canListen && !uiState.isListening,
                 readerGapMs = uiState.readerGapMs,
                 readerSleepMinutes = uiState.readerSleepMinutes,
                 readerStopAfterChapters = uiState.readerStopAfterChapters,
