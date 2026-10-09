@@ -12,7 +12,7 @@ import java.io.File
 object AudioCache {
     private const val MAX_CACHE_BYTES = 32 * 1024 * 1024 // 32MB，按字节封顶避免大 WAV 撑爆内存
     private const val CACHE_TTL_MS = 5 * 60 * 1000L // 5 分钟
-    private const val CACHE_VERSION = "reader-tts-v4"
+    private const val CACHE_VERSION = "reader-tts-v5"
     private val diskCache by lazy {
         FileAudioCache(File(com.voxengine.VoxEngineApplication.instance.cacheDir, "reader_audio"))
     }

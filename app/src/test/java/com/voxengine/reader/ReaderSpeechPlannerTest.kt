@@ -1,9 +1,22 @@
 package com.voxengine.reader
 
+import com.voxengine.engine.mimo.MiMoRequestFactory
 import org.junit.Assert.*
 import org.junit.Test
 
 class ReaderSpeechPlannerTest {
+    @Test fun contextNeverChangesSpeechOrderAcrossChunks() {
+        val content = "他打开房门。\n${"不要走。".repeat(100)}\n她转身离开。"
+        val chunks = ReaderSpeechPlanner.build(content, false, RoleProfile(), ReaderSynthesisOptions(chunkChars = 180))
+        val requests = chunks.map { chunk ->
+            MiMoRequestFactory.build(chunk.speech.text, "茉莉", context = chunk.context)
+        }
+
+        assertEquals(content.replace("\n", ""), requests.joinToString("") { it.messages[1].content })
+        assertTrue(requests.all { it.messages[0].content.isEmpty() })
+        assertTrue(chunks.zipWithNext().all { (left, right) -> left.end == right.start })
+    }
+
     @Test fun speechSpansSurviveScreenPaginationAndKeepContext() {
         val content = "张三笑道：\u201c${"你好。".repeat(100)}\u201d\n李四转身离开。"
         val profile = RoleProfile(characters = mapOf("张三" to RoleVoiceStyle("苏打")))

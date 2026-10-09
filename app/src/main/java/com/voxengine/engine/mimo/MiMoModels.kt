@@ -3,9 +3,6 @@ package com.voxengine.engine.mimo
 import android.util.Base64
 import android.util.Log
 import com.google.gson.Gson
-import com.voxengine.engine.mimo.model.AudioConfig
-import com.voxengine.engine.mimo.model.Message
-import com.voxengine.engine.mimo.model.TTSRequest
 import com.voxengine.engine.mimo.model.TTSResponse
 import com.voxengine.util.LogManager
 import kotlinx.coroutines.Dispatchers
@@ -56,48 +53,20 @@ class MiMoTTSClient(
         context: String? = null
     ): SynthesisResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
-        val content = text
-        // 风格作为自然语言指令放进 user 消息，而非拼进正文，避免服务端把提示词当文本读出来。
-        val styleInstruction = style?.trim()?.takeIf { it.isNotEmpty() && it != "无" }
-
-        // 根据模型类型构建不同的请求体
-        val (userContent, assistantContent, audioConfig) = when (model) {
-            MODEL_DESIGN -> {
-                // design 模型的 user 消息已是音色描述，本期不在其上叠加风格指令。
-                if (optimizeTextPreview) {
-                    // optimizeTextPreview 模式：只需 user 描述，无需 assistant 文本
-                    Triple(voice, null, AudioConfig(format = "wav", optimizeTextPreview = true))
-                } else {
-                    Triple(voice, content, AudioConfig(format = "wav"))
-                }
-            }
-            else -> {
-                // preset / clone：user 消息承载风格指令（可为空），voice 进 audio.voice。
-                Triple(styleInstruction ?: "", content, AudioConfig(format = "wav", voice = voice))
-            }
-        }
-
-        val contextInstruction = context?.takeIf { it.isNotBlank() }?.let {
-            "以下是小说上下文，仅用于理解人物、情绪与语气，不要朗读或复述。只朗读 assistant 消息中的正文。\n<上下文>\n${it.take(1200)}\n</上下文>"
-        }
-        val messages = mutableListOf(
-            Message(role = "user", content = listOfNotNull(userContent, contextInstruction).filter { it.isNotBlank() }.joinToString("\n"))
-        )
-        if (assistantContent != null) {
-            messages.add(Message(role = "assistant", content = assistantContent))
-        }
-
-        val request = TTSRequest(
+        val request = MiMoRequestFactory.build(
+            text = text,
+            voice = voice,
             model = model,
-            messages = messages,
-            audio = audioConfig,
-            temperature = temperature
+            style = style,
+            optimizeTextPreview = optimizeTextPreview,
+            temperature = temperature,
+            context = context
         )
 
         val json = gson.toJson(request)
         val styleInfo = style?.takeIf { it != "无" }?.let { " style=$it" }.orEmpty()
-        Log.d(TAG, "Request model=$model voice=$voice textLength=${content.length}$styleInfo")
-        LogManager.appendLog("D", TAG, "Request model=$model voice=$voice textLength=${content.length}$styleInfo")
+        Log.d(TAG, "Request model=$model voice=$voice textLength=${text.length}$styleInfo")
+        LogManager.appendLog("D", TAG, "Request model=$model voice=$voice textLength=${text.length}$styleInfo")
 
         val httpRequest = Request.Builder()
             .url("$baseUrl/v1/chat/completions")
