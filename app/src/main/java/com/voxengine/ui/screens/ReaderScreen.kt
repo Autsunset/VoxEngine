@@ -26,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,6 +44,7 @@ import com.voxengine.ui.screens.reader.Bookshelf
 import com.voxengine.ui.screens.reader.ReaderPage
 import com.voxengine.ui.screens.reader.ReaderTopMenu
 import com.voxengine.ui.screens.reader.ReaderBottomMenu
+import com.voxengine.ui.screens.reader.ReaderSleepTimerDialog
 import com.voxengine.ui.screens.reader.READER_PANEL_CATALOG
 import com.voxengine.ui.screens.reader.READER_PANEL_NONE
 import com.voxengine.ui.screens.reader.READER_PANEL_SETTINGS
@@ -63,6 +65,7 @@ fun ReaderScreen(
     var menuVisible by remember { mutableStateOf(false) }
     var panelMode by remember { mutableIntStateOf(READER_PANEL_NONE) }
     var voiceExpanded by remember { mutableStateOf(false) }
+    var sleepTimerVisible by rememberSaveable(uiState.currentBook?.uri) { mutableStateOf(false) }
 
     fun toggleReaderMenu() {
         menuVisible = !menuVisible
@@ -146,7 +149,9 @@ fun ReaderScreen(
                         ),
                         isPaused = intent.getBooleanExtra(ReaderPlaybackService.EXTRA_IS_PAUSED, false),
                         isCaching = intent.getBooleanExtra(ReaderPlaybackService.EXTRA_CACHE_ONLY, false),
-                        chapterOffset = intent.getIntExtra(ReaderPlaybackService.EXTRA_CHAPTER_OFFSET, -1).takeIf { it >= 0 }
+                        chapterOffset = intent.getIntExtra(ReaderPlaybackService.EXTRA_CHAPTER_OFFSET, -1).takeIf { it >= 0 },
+                        sleepDeadlineElapsedRealtime = intent.getLongExtra(ReaderPlaybackService.EXTRA_SLEEP_DEADLINE, 0L),
+                        sleepTimerExpired = intent.getBooleanExtra(ReaderPlaybackService.EXTRA_SLEEP_TIMER_EXPIRED, false)
                     )
                 )
             }
@@ -165,6 +170,18 @@ fun ReaderScreen(
     }
 
     val canListen = uiState.isEngineConfigured && uiState.pages.isNotEmpty()
+
+    if (sleepTimerVisible) {
+        ReaderSleepTimerDialog(
+            minutes = uiState.readerSleepMinutes,
+            deadlineElapsedRealtime = uiState.sleepDeadlineElapsedRealtime,
+            onApply = {
+                viewModel.setSleepMinutes(it)
+                sleepTimerVisible = false
+            },
+            onDismiss = { sleepTimerVisible = false }
+        )
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         ReaderPage(
@@ -249,18 +266,18 @@ fun ReaderScreen(
                 canCache = canListen && !uiState.isListening,
                 readerGapMs = uiState.readerGapMs,
                 readerSleepMinutes = uiState.readerSleepMinutes,
+                sleepDeadlineElapsedRealtime = uiState.sleepDeadlineElapsedRealtime,
+                onSleepTimerClick = { sleepTimerVisible = true },
                 readerStopAfterChapters = uiState.readerStopAfterChapters,
                 conservativeRequestIntervalMs = uiState.conservativeRequestIntervalMs,
                 retryCount = uiState.retryCount,
                 retryBaseDelayMs = uiState.retryBaseDelayMs,
                 onGapChange = { viewModel.onGapChange(it) },
-                onSleepChange = { viewModel.onSleepChange(it) },
                 onStopAfterChaptersChange = { viewModel.onStopAfterChaptersChange(it) },
                 onConservativeRequestIntervalChange = { viewModel.onConservativeRequestIntervalChange(it) },
                 onRetryCountChange = { viewModel.onRetryCountChange(it) },
                 onRetryBaseDelayChange = { viewModel.onRetryBaseDelayChange(it) },
                 onGapChangeFinished = { viewModel.commitGap() },
-                onSleepChangeFinished = { viewModel.commitSleep() },
                 onStopAfterChaptersChangeFinished = { viewModel.commitStopAfterChapters() },
                 onConservativeRequestIntervalChangeFinished = { viewModel.commitConservativeRequestInterval() },
                 onRetryCountChangeFinished = { viewModel.commitRetryCount() },

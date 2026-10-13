@@ -59,19 +59,16 @@ internal fun ReaderSettingsPanel(
     onCacheChapters: () -> Unit,
     canCache: Boolean,
     readerGapMs: Int,
-    readerSleepMinutes: Int,
     readerStopAfterChapters: Int,
     conservativeRequestIntervalMs: Int,
     retryCount: Int,
     retryBaseDelayMs: Int,
     onGapChange: (Int) -> Unit,
-    onSleepChange: (Int) -> Unit,
     onStopAfterChaptersChange: (Int) -> Unit,
     onConservativeRequestIntervalChange: (Int) -> Unit,
     onRetryCountChange: (Int) -> Unit,
     onRetryBaseDelayChange: (Int) -> Unit,
     onGapChangeFinished: () -> Unit,
-    onSleepChangeFinished: () -> Unit,
     onStopAfterChaptersChangeFinished: () -> Unit,
     onConservativeRequestIntervalChangeFinished: () -> Unit,
     onRetryCountChangeFinished: () -> Unit,
@@ -199,14 +196,6 @@ internal fun ReaderSettingsPanel(
             onValueChange = { onRetryBaseDelayChange(it.roundToInt()) },
             onValueChangeFinished = onRetryBaseDelayChangeFinished,
             valueRange = 500f..15000f
-        )
-        Text("定时停止: " + if (readerSleepMinutes == 0) "关闭" else "${readerSleepMinutes}分钟", style = MaterialTheme.typography.bodySmall)
-        Slider(
-            value = readerSleepMinutes.toFloat(),
-            onValueChange = { onSleepChange(it.roundToInt()) },
-            onValueChangeFinished = onSleepChangeFinished,
-            valueRange = 0f..180f,
-            steps = 17
         )
         Text("播放章数后停止: " + if (readerStopAfterChapters == 0) "关闭" else "${readerStopAfterChapters}章", style = MaterialTheme.typography.bodySmall)
         Slider(

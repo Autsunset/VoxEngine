@@ -20,6 +20,7 @@ import com.voxengine.reader.PlaybackSnapshot
 import com.voxengine.reader.ReaderChapterCache
 import com.voxengine.reader.ReaderMeasuredPageCache
 import com.voxengine.reader.ReaderPlaybackService
+import com.voxengine.reader.ReaderSleepTimer
 import com.voxengine.reader.TxtChapter
 import com.voxengine.reader.TxtNovelParser
 import com.voxengine.reader.TxtPage
@@ -86,7 +87,11 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
         }
         // 设置项：持久值变化时同步到 UiState（作为草稿值，编辑后由对应 commit 持久化）。
         viewModelScope.launch { settings.readerParagraphGapMs.collect { v -> _uiState.update { it.copy(readerGapMs = v) } } }
-        viewModelScope.launch { settings.readerSleepMinutes.collect { v -> _uiState.update { it.copy(readerSleepMinutes = v) } } }
+        viewModelScope.launch {
+            settings.readerSleepMinutes.collect { v ->
+                _uiState.update { it.copy(readerSleepMinutes = v.coerceIn(0, ReaderSleepTimer.MAX_MINUTES)) }
+            }
+        }
         viewModelScope.launch { settings.readerStopAfterChapters.collect { v -> _uiState.update { it.copy(readerStopAfterChapters = v) } } }
         viewModelScope.launch { settings.readerConservativeRequestIntervalMs.collect { v -> _uiState.update { it.copy(conservativeRequestIntervalMs = v) } } }
         viewModelScope.launch { settings.readerRetryCount.collect { v -> _uiState.update { it.copy(retryCount = v) } } }
@@ -164,7 +169,8 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openBook(book: ReaderBookEntity) {
         _uiState.update {
-            it.copy(currentBook = book, isListening = false, isPaused = false, selectedParagraphIndex = null)
+            it.copy(currentBook = book, isListening = false, isPaused = false, isCaching = false,
+                sleepDeadlineElapsedRealtime = 0L, selectedParagraphIndex = null)
         }
         viewModelScope.launch {
             val profileJson = settings.getReaderRoleProfileForBook(book.uri)
@@ -174,7 +180,8 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun closeBook() {
-        _uiState.update { it.copy(currentBook = null, isListening = false, isPaused = false, selectedParagraphIndex = null) }
+        _uiState.update { it.copy(currentBook = null, isListening = false, isPaused = false, isCaching = false,
+            sleepDeadlineElapsedRealtime = 0L, selectedParagraphIndex = null) }
     }
 
     private fun loadBook() {
@@ -412,6 +419,7 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
             it.copy(
                 isListening = true,
                 isPaused = false,
+                isCaching = cacheOnly,
                 selectedParagraphIndex = null,
                 statusText = if (cacheOnly) "预缓存进行中，可在通知栏暂停或停止" else if (paragraphIndex > 0) "已从选中段落开始听书" else "听书已开始"
             )
@@ -435,17 +443,31 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
     fun stopListening() {
         if (!_uiState.value.isListening) return
         sendPlayback(ReaderPlaybackService.ACTION_STOP)
-        _uiState.update { it.copy(isListening = false, isPaused = false, statusText = "听书已停止") }
+        _uiState.update { it.copy(isListening = false, isPaused = false, isCaching = false,
+            sleepDeadlineElapsedRealtime = 0L, statusText = "听书已停止") }
     }
 
     fun syncPlaybackSnapshot(snapshot: PlaybackSnapshot?) {
         val book = _uiState.value.currentBook ?: return
         if (snapshot == null || snapshot.uri != book.uri || !snapshot.isListening) {
-            _uiState.update { it.copy(isListening = false, isPaused = false) }
+            _uiState.update {
+                it.copy(
+                    isListening = false,
+                    isPaused = false,
+                    isCaching = false,
+                    sleepDeadlineElapsedRealtime = 0L,
+                    statusText = when {
+                        snapshot?.uri == book.uri && snapshot.sleepTimerExpired -> "定时已到，听书已停止"
+                        it.isListening -> "听书已停止"
+                        else -> it.statusText
+                    }
+                )
+            }
             return
         }
         if (snapshot.isCaching) {
-            _uiState.update { it.copy(isListening = true, isPaused = snapshot.isPaused,
+            _uiState.update { it.copy(isListening = true, isPaused = snapshot.isPaused, isCaching = true,
+                sleepDeadlineElapsedRealtime = 0L,
                 statusText = "${if (snapshot.isPaused) "预缓存已暂停" else "预缓存中"} · 第${snapshot.chapterIndex + 1}章，第${snapshot.pageIndex + 1}页") }
             return
         }
@@ -454,6 +476,8 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
             it.copy(
                 isListening = true,
                 isPaused = snapshot.isPaused,
+                isCaching = false,
+                sleepDeadlineElapsedRealtime = snapshot.sleepDeadlineElapsedRealtime,
                 statusText = if (snapshot.isPaused) "听书已暂停" else "听书播放中"
             )
         }
@@ -579,8 +603,23 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
     fun onGapChange(value: Int) = _uiState.update { it.copy(readerGapMs = value.coerceIn(0, 3000)) }
     fun commitGap() = viewModelScope.launch { settings.updateReaderParagraphGapMs(_uiState.value.readerGapMs) }
 
-    fun onSleepChange(value: Int) = _uiState.update { it.copy(readerSleepMinutes = value.coerceIn(0, 180)) }
-    fun commitSleep() = viewModelScope.launch { settings.updateReaderSleepMinutes(_uiState.value.readerSleepMinutes) }
+    fun setSleepMinutes(value: Int) {
+        val minutes = value.coerceIn(0, ReaderSleepTimer.MAX_MINUTES)
+        _uiState.update { it.copy(readerSleepMinutes = minutes) }
+        val state = _uiState.value
+        viewModelScope.launch { settings.updateReaderSleepMinutes(minutes) }
+        val bookUri = state.currentBook?.uri ?: return
+        val snapshot = ReaderPlaybackService.getPlaybackSnapshot(bookUri)
+        // Also handle a START intent queued before the service publishes its first snapshot.
+        if ((snapshot?.isListening ?: state.isListening) && !(snapshot?.isCaching ?: state.isCaching)) {
+            getApplication<Application>().startService(
+                Intent(getApplication(), ReaderPlaybackService::class.java)
+                    .setAction(ReaderPlaybackService.ACTION_SET_SLEEP_TIMER)
+                    .putExtra(ReaderPlaybackService.EXTRA_URI, bookUri)
+                    .putExtra(ReaderPlaybackService.EXTRA_SLEEP_MINUTES, minutes)
+            )
+        }
+    }
 
     fun onStopAfterChaptersChange(value: Int) = _uiState.update { it.copy(readerStopAfterChapters = value.coerceIn(0, 20)) }
     fun commitStopAfterChapters() = viewModelScope.launch { settings.updateReaderStopAfterChapters(_uiState.value.readerStopAfterChapters) }
@@ -620,6 +659,8 @@ data class ReaderUiState(
     val voices: List<VoiceInfo> = emptyList(),
     val isListening: Boolean = false,
     val isPaused: Boolean = false,
+    val isCaching: Boolean = false,
+    val sleepDeadlineElapsedRealtime: Long = 0L,
     val selectedParagraphIndex: Int? = null,
     val isEngineConfigured: Boolean = false,
     val synthesisOptions: com.voxengine.reader.ReaderSynthesisOptions = com.voxengine.reader.ReaderSynthesisOptions(),

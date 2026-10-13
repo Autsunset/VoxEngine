@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
@@ -17,6 +18,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -133,18 +135,18 @@ internal fun ReaderBottomMenu(
     canCache: Boolean,
     readerGapMs: Int,
     readerSleepMinutes: Int,
+    sleepDeadlineElapsedRealtime: Long,
+    onSleepTimerClick: () -> Unit,
     readerStopAfterChapters: Int,
     conservativeRequestIntervalMs: Int,
     retryCount: Int,
     retryBaseDelayMs: Int,
     onGapChange: (Int) -> Unit,
-    onSleepChange: (Int) -> Unit,
     onStopAfterChaptersChange: (Int) -> Unit,
     onConservativeRequestIntervalChange: (Int) -> Unit,
     onRetryCountChange: (Int) -> Unit,
     onRetryBaseDelayChange: (Int) -> Unit,
     onGapChangeFinished: () -> Unit,
-    onSleepChangeFinished: () -> Unit,
     onStopAfterChaptersChangeFinished: () -> Unit,
     onConservativeRequestIntervalChangeFinished: () -> Unit,
     onRetryCountChangeFinished: () -> Unit,
@@ -172,7 +174,10 @@ internal fun ReaderBottomMenu(
         shadowElevation = 8.dp,
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f)
     ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+        Column(
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding()
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+        ) {
             when (panelMode) {
                 READER_PANEL_CATALOG -> CatalogPanel(
                     chapters = chapters,
@@ -204,19 +209,16 @@ internal fun ReaderBottomMenu(
                     onCacheChapters = onCacheChapters,
                     canCache = canCache,
                     readerGapMs = readerGapMs,
-                    readerSleepMinutes = readerSleepMinutes,
                     readerStopAfterChapters = readerStopAfterChapters,
                     conservativeRequestIntervalMs = conservativeRequestIntervalMs,
                     retryCount = retryCount,
                     retryBaseDelayMs = retryBaseDelayMs,
                     onGapChange = onGapChange,
-                    onSleepChange = onSleepChange,
                     onStopAfterChaptersChange = onStopAfterChaptersChange,
                     onConservativeRequestIntervalChange = onConservativeRequestIntervalChange,
                     onRetryCountChange = onRetryCountChange,
                     onRetryBaseDelayChange = onRetryBaseDelayChange,
                     onGapChangeFinished = onGapChangeFinished,
-                    onSleepChangeFinished = onSleepChangeFinished,
                     onStopAfterChaptersChangeFinished = onStopAfterChaptersChangeFinished,
                     onConservativeRequestIntervalChangeFinished = onConservativeRequestIntervalChangeFinished,
                     onRetryCountChangeFinished = onRetryCountChangeFinished,
@@ -302,6 +304,21 @@ internal fun ReaderBottomMenu(
 
             val tip = statusText.ifBlank {
                 if (canListen) "顺序合成，播放时缓存后续段落" else "请先配置当前语音引擎"
+            }
+            TextButton(
+                onClick = onSleepTimerClick,
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            ) {
+                Icon(Icons.Default.Timer, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                val remaining = rememberSleepTimeRemaining(sleepDeadlineElapsedRealtime)
+                Text(
+                    when {
+                        sleepDeadlineElapsedRealtime > 0L -> "定时关闭 · 剩余 $remaining"
+                        readerSleepMinutes > 0 -> "定时关闭 · 下次听书 ${readerSleepMinutes}分钟"
+                        else -> "定时关闭 · 未开启"
+                    }
+                )
             }
             Text(
                 tip,

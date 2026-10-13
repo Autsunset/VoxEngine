@@ -14,6 +14,7 @@ import android.media.session.MediaSession
 import android.media.session.PlaybackState as PlatformPlaybackState
 import android.net.Uri
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.room.withTransaction
 import com.voxengine.MainActivity
 import com.voxengine.R
@@ -51,12 +52,18 @@ data class PlaybackSnapshot(
     val isListening: Boolean,
     val isPaused: Boolean,
     val isCaching: Boolean = false,
-    val chapterOffset: Int? = null
+    val chapterOffset: Int? = null,
+    val sleepDeadlineElapsedRealtime: Long = 0L,
+    val sleepTimerExpired: Boolean = false
 )
 
 class ReaderPlaybackService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var playbackJob: Job? = null
+    private val sleepTimer = ReaderSleepTimer(serviceScope, SystemClock::elapsedRealtime) {
+        stopPlayback(sleepTimerExpired = true)
+    }
+    private var notificationText = "准备播放"
     private var currentTrack: AudioTrack? = null
     @Volatile private var isPaused = false
     private var state: PlaybackState? = null
@@ -94,6 +101,16 @@ class ReaderPlaybackService : Service() {
             ACTION_STOP -> stopPlayback()
             ACTION_PREVIOUS_CHAPTER -> moveChapter(-1)
             ACTION_NEXT_CHAPTER -> moveChapter(1)
+            ACTION_SET_SLEEP_TIMER -> {
+                val playbackState = state
+                if (playbackState == null) {
+                    stopSelf(startId)
+                } else if (!playbackState.cacheOnly && intent.getStringExtra(EXTRA_URI) == playbackState.uri) {
+                    sleepTimer.start(intent.getIntExtra(EXTRA_SLEEP_MINUTES, 0))
+                    publishPlaybackState(true)
+                    updateNotification(notificationText, !isPaused)
+                }
+            }
         }
         return START_STICKY
     }
@@ -125,9 +142,6 @@ class ReaderPlaybackService : Service() {
             paragraphIndex = intent.getIntExtra(EXTRA_PARAGRAPH_INDEX, 0).coerceAtLeast(0),
             pageTargetLength = intent.getIntExtra(EXTRA_PAGE_TARGET_LENGTH, 220).coerceIn(90, 520),
             gapMs = intent.getLongExtra(EXTRA_GAP_MS, 700L).coerceAtLeast(0L),
-            stopAtMillis = intent.getIntExtra(EXTRA_SLEEP_MINUTES, 0).let { minutes ->
-                if (minutes > 0) System.currentTimeMillis() + minutes * 60_000L else 0L
-            },
             stopAfterChapters = intent.getIntExtra(EXTRA_STOP_AFTER_CHAPTERS, 0),
             conservativeRequestIntervalMs = intent.getIntExtra(
                 EXTRA_CONSERVATIVE_REQUEST_INTERVAL_MS,
@@ -147,7 +161,9 @@ class ReaderPlaybackService : Service() {
         isPaused = false
         lastProgressPersistAt = 0L
         fallbackPagesByChapter.clear()
-        startForeground(NOTIFICATION_ID, buildNotification("准备播放", isPlaying = true))
+        sleepTimer.start(if (state?.cacheOnly == true) 0 else intent.getIntExtra(EXTRA_SLEEP_MINUTES, 0))
+        notificationText = "准备播放"
+        startForeground(NOTIFICATION_ID, buildNotification(notificationText, isPlaying = true))
         playbackJob = serviceScope.launch { runPlayback() }
         publishPlaybackState(true)
         updateMediaMetadata(state?.title ?: "VoxEngine 听书")
@@ -160,6 +176,7 @@ class ReaderPlaybackService : Service() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            currentCoroutineContext().ensureActive()
             LogManager.appendLog("E", TAG, "Reader playback failed: ${e.message}")
             updateNotification("听书失败: ${com.voxengine.util.TtsErrors.friendly(e)}", false)
             finishPlayback()
@@ -253,7 +270,7 @@ class ReaderPlaybackService : Service() {
                     for ((index, chunk) in chunks.withIndex()) {
                         while (isPaused && currentCoroutineContext().isActive) delay(150)
                         currentCoroutineContext().ensureActive()
-                        if (!playbackState.cacheOnly && playbackState.stopAtMillis > 0 && System.currentTimeMillis() >= playbackState.stopAtMillis) break
+                        if (sleepTimer.expireIfDue()) return@coroutineScope
                         val pages = pagesForPlayback(chapters, chapterIndex, playbackState)
                         val (pageIndex, paragraphIndex) = ReaderSpeechPlanner.displayPosition(pages, chunk.start)
                         sendProgress(chapterIndex, pageIndex, paragraphIndex, chunk.start)
@@ -294,7 +311,7 @@ class ReaderPlaybackService : Service() {
                     audio.clear()
                 }
             }
-            if (!playbackState.cacheOnly && playbackState.stopAtMillis > 0 && System.currentTimeMillis() >= playbackState.stopAtMillis) break
+            currentCoroutineContext().ensureActive()
             completedChapters++
             if (!playbackState.cacheOnly) {
                 if (chapterIndex < chapters.lastIndex) persistProgress(db, playbackState.uri, chapterIndex + 1, 0, 0)
@@ -309,6 +326,7 @@ class ReaderPlaybackService : Service() {
     }
 
     private fun finishPlayback() {
+        sleepTimer.cancel()
         publishPlaybackState(false)
         state = null
         playbackJob = null
@@ -423,8 +441,12 @@ class ReaderPlaybackService : Service() {
         val bytesPerFrame = channelCount * (bitsPerSample / 8).coerceAtLeast(1)
         val frameCount = if (bytesPerFrame > 0) pcmData.size / bytesPerFrame else pcmData.size
 
-        val track = obtainStreamTrack(sampleRate, channelConfig, encoding)
-        currentTrack = track
+        // Track creation and timer-driven release must not race across dispatchers.
+        val track = withContext(Dispatchers.Main.immediate) {
+            sleepTimer.expireIfDue()
+            currentCoroutineContext().ensureActive()
+            obtainStreamTrack(sampleRate, channelConfig, encoding).also { currentTrack = it }
+        }
         try {
             val speed = state?.speed ?: 1.0f
             if (speed > 0f && kotlin.math.abs(speed - 1.0f) > 0.01f) {
@@ -567,6 +589,7 @@ class ReaderPlaybackService : Service() {
 
     private fun resumePlayback() {
         if (state == null || playbackJob == null) return
+        if (sleepTimer.expireIfDue()) return
         isPaused = false
         currentTrack?.let { track -> runCatching { track.play() } }
         updateNotification("播放中", true)
@@ -576,6 +599,7 @@ class ReaderPlaybackService : Service() {
 
     private fun moveChapter(delta: Int) {
         val playbackState = state ?: return
+        if (sleepTimer.expireIfDue()) return
         val targetChapter = ReaderPlaybackPlanner.targetChapter(
             playbackState.chapterIndex,
             delta,
@@ -594,21 +618,40 @@ class ReaderPlaybackService : Service() {
         updateMediaPlaybackState()
     }
 
-    private fun stopPlayback(releaseService: Boolean = true) {
+    private fun stopPlayback(releaseService: Boolean = true, sleepTimerExpired: Boolean = false) {
+        val stoppedState = state?.copy()
+        sleepTimer.cancel()
         playbackJob?.cancel()
         currentTrack = null
         releaseStreamTrack()
         playbackJob = null
         isPaused = false
-        publishPlaybackState(false)
+        publishPlaybackState(false, sleepTimerExpired)
         state = null
         fallbackPagesByChapter.clear()
         updateMediaPlaybackState()
         stopForeground(STOP_FOREGROUND_REMOVE)
-        if (releaseService) stopSelf()
+        if (releaseService) {
+            serviceScope.launch {
+                try {
+                    if (stoppedState != null && !stoppedState.cacheOnly) {
+                        persistProgress(AppDatabase.getDatabase(this@ReaderPlaybackService), stoppedState.uri,
+                            stoppedState.chapterIndex, stoppedState.pageIndex, stoppedState.paragraphIndex)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    LogManager.appendLog("W", TAG, "Could not save stopped reader position: ${e.message}")
+                } finally {
+                    // A new session may have started while Room was saving progress.
+                    if (state == null) stopSelf()
+                }
+            }
+        }
     }
 
     private fun updateNotification(text: String, isPlaying: Boolean) {
+        notificationText = text
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text, isPlaying))
     }
 
@@ -627,7 +670,8 @@ class ReaderPlaybackService : Service() {
                 isListening = true,
                 isPaused = isPaused,
                 isCaching = playbackState.cacheOnly,
-                chapterOffset = chapterOffset
+                chapterOffset = chapterOffset,
+                sleepDeadlineElapsedRealtime = sleepTimer.deadlineElapsedRealtime
             )
         )
         sendBroadcast(
@@ -636,13 +680,15 @@ class ReaderPlaybackService : Service() {
                 .putExtra(EXTRA_URI, playbackState.uri)
                 .putExtra(EXTRA_CACHE_ONLY, playbackState.cacheOnly)
                 .putExtra(EXTRA_CHAPTER_OFFSET, chapterOffset ?: -1)
+                .putExtra(EXTRA_IS_PAUSED, isPaused)
+                .putExtra(EXTRA_SLEEP_DEADLINE, sleepTimer.deadlineElapsedRealtime)
                 .putExtra(EXTRA_CHAPTER_INDEX, chapterIndex)
                 .putExtra(EXTRA_PAGE_INDEX, pageIndex)
                 .putExtra(EXTRA_PARAGRAPH_INDEX, paragraphIndex)
         )
     }
 
-    private fun publishPlaybackState(isListening: Boolean) {
+    private fun publishPlaybackState(isListening: Boolean, sleepTimerExpired: Boolean = false) {
         val playbackState = state ?: return
         val snapshot = PlaybackSnapshot(
             uri = playbackState.uri,
@@ -652,7 +698,9 @@ class ReaderPlaybackService : Service() {
             isListening = isListening,
             isPaused = isListening && isPaused,
             isCaching = playbackState.cacheOnly,
-            chapterOffset = playbackState.chapterOffset
+            chapterOffset = playbackState.chapterOffset,
+            sleepDeadlineElapsedRealtime = if (isListening) sleepTimer.deadlineElapsedRealtime else 0L,
+            sleepTimerExpired = sleepTimerExpired
         )
         if (isListening) {
             playbackSnapshotRef.set(snapshot)
@@ -670,6 +718,8 @@ class ReaderPlaybackService : Service() {
                 .putExtra(EXTRA_IS_PAUSED, snapshot.isPaused)
                 .putExtra(EXTRA_CACHE_ONLY, snapshot.isCaching)
                 .putExtra(EXTRA_CHAPTER_OFFSET, snapshot.chapterOffset ?: -1)
+                .putExtra(EXTRA_SLEEP_DEADLINE, snapshot.sleepDeadlineElapsedRealtime)
+                .putExtra(EXTRA_SLEEP_TIMER_EXPIRED, snapshot.sleepTimerExpired)
         )
     }
 
@@ -679,10 +729,15 @@ class ReaderPlaybackService : Service() {
             if (isPaused) "继续" else "暂停",
             serviceIntent(if (isPaused) ACTION_RESUME else ACTION_PAUSE, 1)
         )
+        val remainingMillis = ReaderSleepTimer.remainingMillis(sleepTimer.deadlineElapsedRealtime, SystemClock.elapsedRealtime())
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(state?.title ?: "VoxEngine 听书")
-            .setContentText(text)
+            .setContentText(if (remainingMillis > 0L) "$text · 定时关闭" else text)
+            .setWhen(System.currentTimeMillis() + remainingMillis)
+            .setShowWhen(remainingMillis > 0L)
+            .setUsesChronometer(remainingMillis > 0L)
+            .setChronometerCountDown(true)
             .setOngoing(isPlaying)
             .setContentIntent(
                 PendingIntent.getActivity(
@@ -783,6 +838,8 @@ class ReaderPlaybackService : Service() {
     }
 
     private fun AudioTrack.releaseSafely() {
+        runCatching { pause() }
+        runCatching { flush() }
         runCatching { stop() }
         runCatching { release() }
     }
@@ -798,7 +855,6 @@ class ReaderPlaybackService : Service() {
         var paragraphIndex: Int,
         val pageTargetLength: Int,
         val gapMs: Long,
-        val stopAtMillis: Long,
         val stopAfterChapters: Int,
         val conservativeRequestIntervalMs: Long,
         val retryCount: Int,
@@ -821,6 +877,7 @@ class ReaderPlaybackService : Service() {
         const val ACTION_STOP = "com.voxengine.reader.STOP"
         const val ACTION_PREVIOUS_CHAPTER = "com.voxengine.reader.PREVIOUS_CHAPTER"
         const val ACTION_NEXT_CHAPTER = "com.voxengine.reader.NEXT_CHAPTER"
+        const val ACTION_SET_SLEEP_TIMER = "com.voxengine.reader.SET_SLEEP_TIMER"
         const val ACTION_PROGRESS = "com.voxengine.reader.PROGRESS"
 
         const val ACTION_PLAYBACK_STATE = "com.voxengine.reader.PLAYBACK_STATE"
@@ -846,6 +903,8 @@ class ReaderPlaybackService : Service() {
         const val EXTRA_PAGE_TARGET_LENGTH = "page_target_length"
         const val EXTRA_GAP_MS = "gap_ms"
         const val EXTRA_SLEEP_MINUTES = "sleep_minutes"
+        const val EXTRA_SLEEP_DEADLINE = "sleep_deadline_elapsed_realtime"
+        const val EXTRA_SLEEP_TIMER_EXPIRED = "sleep_timer_expired"
         const val EXTRA_STOP_AFTER_CHAPTERS = "stop_after_chapters"
         const val EXTRA_CONSERVATIVE_REQUEST_INTERVAL_MS = "conservative_request_interval_ms"
         const val EXTRA_RETRY_COUNT = "retry_count"
