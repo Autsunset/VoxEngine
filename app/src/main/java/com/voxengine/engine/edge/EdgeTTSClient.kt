@@ -2,7 +2,6 @@ package com.voxengine.engine.edge
 
 import com.voxengine.audio.AudioUtils
 import com.voxengine.audio.Mp3Decoder
-import com.voxengine.util.HexEncoding
 import com.voxengine.util.LogManager
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -10,7 +9,6 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
-import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -50,7 +48,7 @@ internal fun localeFromEdgeVoice(voice: String): String {
  * 微软 Edge 免费 TTS 客户端。通过 WebSocket 连接 readaloud 端点合成语音。
  *
  * 端点只返回 MP3（PCM 输出为 Azure 付费层特性），因此解码为 PCM 后由调用方包成 WAV。
- * 需要 Sec-MS-GEC 滚动令牌握手（参考开源 edge-tts 算法）。
+ * 需要 Sec-MS-GEC v2 滚动令牌握手（参考开源 edge-tts 算法）。
  */
 class EdgeTTSClient {
     private val client = OkHttpClient.Builder()
@@ -88,16 +86,8 @@ class EdgeTTSClient {
         return AudioUtils.pcmToWav(decoded.pcm, decoded.sampleRate, decoded.channelCount, 16)
     }
 
-    private fun connectAndCollect(text: String, voice: String): ByteArray {
-        val gec = generateSecMsGec()
-        val url = "$WSS_BASE?TrustedClientToken=$TRUSTED_CLIENT_TOKEN" +
-            "&Sec-MS-GEC=$gec&Sec-MS-GEC-Version=$GEC_VERSION"
-
-        val request = Request.Builder()
-            .url(url)
-            .header("Origin", ORIGIN)
-            .header("User-Agent", USER_AGENT)
-            .build()
+    internal fun connectAndCollect(text: String, voice: String): ByteArray {
+        val request = buildWebSocketRequest(System.currentTimeMillis() + clockSkewMs)
 
         val mp3 = ByteArrayOutputStreamCollector()
         val error = AtomicReference<Throwable?>(null)
@@ -203,22 +193,6 @@ class EdgeTTSClient {
 
     private fun isoTimestamp(): String = timestampFormat.get()!!.format(Date())
 
-    /**
-     * 生成 Sec-MS-GEC 令牌：取当前 Windows FILETIME（1601 纪元、100ns 单位），
-     * 向下取整到 5 分钟（即 3,000,000,000 个 100ns 单位），拼上 TrustedClientToken 后 SHA256，大写十六进制。
-     */
-    private fun generateSecMsGec(): String {
-        val unixMs = System.currentTimeMillis() + clockSkewMs
-        // Unix 纪元到 Windows 纪元差 11644473600 秒；转 100ns 单位。
-        var ticks = (unixMs / 1000 + WIN_EPOCH_DIFF_SECONDS) * 10_000_000L
-        ticks -= ticks % 3_000_000_000L
-        val strToHash = "$ticks$TRUSTED_CLIENT_TOKEN"
-        val md = sha256Digest.get()!!
-        md.reset()
-        val digest = md.digest(strToHash.toByteArray(Charsets.US_ASCII))
-        return HexEncoding.upper(digest)
-    }
-
     /** 简单的线程安全字节累加器（onMessage 可能跨线程回调）。 */
     private class ByteArrayOutputStreamCollector {
         private val out = java.io.ByteArrayOutputStream()
@@ -228,18 +202,32 @@ class EdgeTTSClient {
 
     companion object {
         private const val TAG = "EdgeTTSClient"
-        private const val TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
         private const val WSS_BASE =
             "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
         private const val CHROMIUM_FULL_VERSION = "143.0.3650.75"
-        private const val GEC_VERSION = "1-$CHROMIUM_FULL_VERSION"
+        private const val GEC_VERSION = "2-$CHROMIUM_FULL_VERSION"
         private const val USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
         private const val ORIGIN = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
-        private const val WIN_EPOCH_DIFF_SECONDS = 11644473600L
         private val AUDIO_PATH_MARKER = "Path:audio\r\n".toByteArray(Charsets.US_ASCII)
         private val HEADER_SEPARATOR = "\r\n\r\n".toByteArray(Charsets.US_ASCII)
-        private val sha256Digest = ThreadLocal.withInitial { MessageDigest.getInstance("SHA-256") }
+        internal fun buildWebSocketRequest(unixMs: Long): Request {
+            val connectionId = UUID.randomUUID().toString().replace("-", "")
+            val muid = UUID.randomUUID().toString().replace("-", "").uppercase(Locale.ROOT)
+            val url = "$WSS_BASE?TrustedClientToken=${EdgeGecToken.TRUSTED_CLIENT_TOKEN}" +
+                "&ConnectionId=$connectionId&Sec-MS-GEC=${EdgeGecToken.generate(unixMs)}" +
+                "&Sec-MS-GEC-Version=$GEC_VERSION"
+            return Request.Builder()
+                .url(url)
+                .header("Origin", ORIGIN)
+                .header("User-Agent", USER_AGENT)
+                .header("Pragma", "no-cache")
+                .header("Cache-Control", "no-cache")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .header("Cookie", "muid=$muid;")
+                .build()
+        }
+
         private val httpDateFormat = ThreadLocal.withInitial {
             SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", Locale.US).apply {
                 timeZone = TimeZone.getTimeZone("GMT")

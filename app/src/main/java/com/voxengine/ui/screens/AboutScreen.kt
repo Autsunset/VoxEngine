@@ -66,6 +66,14 @@ fun AboutScreen(navController: NavController = rememberNavController()) {
                 TextButton(onClick = { navController.navigate(Screen.Log.route) }) {
                     Text("查看日志")
                 }
+                Text(
+                    "Edge TTS v2 令牌算法改编自 edge-tts（LGPL-3.0），" +
+                        "版权归原作者及贡献者所有；完整许可证随应用打包。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                TextButton(onClick = { openUrl("https://github.com/rany2/edge-tts") }) {
+                    Text("edge-tts 源码与许可证")
+                }
             }
         }
 

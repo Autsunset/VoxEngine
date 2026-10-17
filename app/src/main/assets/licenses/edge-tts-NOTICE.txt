@@ -1,0 +1,20 @@
+Edge TTS v2 token generation
+
+EdgeGecToken.kt is a Kotlin adaptation of src/edge_tts/drm.py from edge-tts:
+https://github.com/rany2/edge-tts
+Upstream revision: b2ffbdd9f43f28f03cc939b5de0f3964aa62d60e (2026-10-13).
+
+Copyright (c) rany and edge-tts contributors.
+Kotlin adaptation copyright (c) 2026 VoxEngine contributors.
+
+This component is licensed under the GNU Lesser General Public License,
+version 3. It is not covered by VoxEngine's MIT license.
+See LGPL-3.0.txt and GPL-3.0.txt in this directory.
+
+The adaptation replaces Python's arbitrary-precision arithmetic with
+32-bit wrapping arithmetic and uses a conventional SHA-256 round loop
+instead of the upstream unrolled implementation.
+
+The modified component's source is distributed with VoxEngine:
+app/src/main/java/com/voxengine/engine/edge/EdgeGecToken.kt
+https://github.com/Autsunset/VoxEngine

@@ -172,6 +172,17 @@ MiMo 可开启「段落上下文」。预设/克隆音色在未指定风格时�
 ./gradlew assembleRelease
 ```
 
+Edge TTS 使用原有 Read Aloud WebSocket 地址，握手已适配 `Sec-MS-GEC v2`，并保留 403 时根据服务器时间校正后重试的机制。无需更换第三方接口或填写密钥。
+
+```bash
+# 本地回归测试（默认不访问在线 TTS 服务）
+./gradlew :app:testDebugUnitTest --max-workers=2
+
+# 显式启用 Edge 在线合成测试（晓晓、云希、日语七海）
+VOX_EDGE_LIVE_TEST=1 ./gradlew :app:testDebugUnitTest \
+  --tests 'com.voxengine.engine.edge.*' --max-workers=2 --rerun-tasks
+```
+
 ## 免责声明
 
 本软件为开源项目，仅供学习和个人使用，严禁用于任何违法违规用途。使用本软件即表示您已阅读并同意 [MiMo 用户协议](https://platform.xiaomimimo.com/docs/terms/user-agreement) 和 [MiMo 隐私政策](https://privacy.mi.com/XiaomiMiMoPlatform/zh_CN/)。
@@ -179,7 +190,8 @@ MiMo 可开启「段落上下文」。预设/克隆音色在未指定风格时�
 ## 致谢
 
 - [MiMo TTS](https://platform.xiaomimimo.com?ref=S5T7WV) — 小米 MiMo 语音合成 API
+- [edge-tts](https://github.com/rany2/edge-tts) — Edge TTS v2 令牌算法参考实现
 
 ## 许可证
 
-本项目基于 [MIT License](LICENSE) 开源。
+本项目自身代码基于 [MIT License](LICENSE) 开源；`EdgeGecToken.kt` 改编自 edge-tts，使用 LGPL-3.0 许可证。第三方声明与完整许可证随应用打包，见 [assets/licenses](app/src/main/assets/licenses)。
