@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -35,7 +36,6 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -44,7 +44,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -65,8 +64,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.voxengine.audio.AudioUtils
+import com.voxengine.data.AppThemeStyle
 import com.voxengine.data.VoiceEntity
 import com.voxengine.engine.EngineRegistry
+import com.voxengine.ui.components.VoxPageHeader
+import com.voxengine.ui.theme.LocalAppThemeStyle
+import com.voxengine.ui.components.VoxCard as Card
+import com.voxengine.ui.components.VoxScreenScaffold as Scaffold
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -86,6 +90,7 @@ fun VoiceManageScreen() {
     val previewingVoice by viewModel.previewingVoice.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
     val activeEngineName = EngineRegistry.get(currentEngineId)?.name ?: currentEngineId
+    val isGlass = LocalAppThemeStyle.current == AppThemeStyle.LIQUID_GLASS
 
     var showAddDialog by remember { mutableStateOf(false) }
     var showDesignDialog by remember { mutableStateOf(false) }
@@ -127,11 +132,31 @@ fun VoiceManageScreen() {
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("音色管理 - $activeEngineName") }) }
+        topBar = {
+            if (isGlass) {
+                VoxPageHeader(
+                    title = "声音收藏",
+                    subtitle = "$activeEngineName · 发现你的专属声音",
+                    eyebrow = "VOICES"
+                )
+            } else {
+                TopAppBar(title = { Text("音色管理 - $activeEngineName") })
+            }
+        }
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.fillMaxSize().then(
+                if (isGlass) Modifier else Modifier.padding(padding).padding(16.dp)
+            ),
+            contentPadding = if (isGlass) {
+                PaddingValues(
+                    start = 16.dp,
+                    top = padding.calculateTopPadding() + 16.dp,
+                    end = 16.dp,
+                    bottom = padding.calculateBottomPadding() + 16.dp
+                )
+            } else PaddingValues(0.dp),
+            verticalArrangement = Arrangement.spacedBy(if (isGlass) 12.dp else 8.dp)
         ) {
             // 导入导出
             item {
@@ -151,7 +176,11 @@ fun VoiceManageScreen() {
             }
 
             item {
-                Text("预设音色", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    if (isGlass) "预设音色 · ${presetVoices.size}" else "预设音色",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = if (isGlass) Modifier.padding(top = 12.dp) else Modifier
+                )
                 Spacer(Modifier.height(8.dp))
             }
             items(presetVoices) { voice ->

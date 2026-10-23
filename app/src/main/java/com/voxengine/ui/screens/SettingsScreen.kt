@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -23,7 +22,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -50,10 +48,17 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.appcompat.app.AppCompatDelegate
 import com.voxengine.data.AppDatabase
+import com.voxengine.data.AppThemeStyle
 import com.voxengine.data.SettingsRepository
 import com.voxengine.engine.EngineRegistry
 import com.voxengine.engine.TTSEngine
 import com.voxengine.engine.mimo.MiMoEngine
+import com.voxengine.ui.components.ThemeStylePicker
+import com.voxengine.ui.components.VoxPageHeader
+import com.voxengine.ui.components.VoxCard as Card
+import com.voxengine.ui.components.VoxScreenScaffold as Scaffold
+import com.voxengine.ui.theme.LocalAppThemeStyle
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -76,6 +81,8 @@ fun SettingsScreen() {
     val scope = rememberCoroutineScope()
     val settings = remember { SettingsRepository(context) }
     val db = remember { AppDatabase.getDatabase(context) }
+    val themeStyle = LocalAppThemeStyle.current
+    var savingTheme by remember { mutableStateOf(false) }
 
     val baseUrl by settings.baseUrl.collectAsState(initial = "https://api.xiaomimimo.com")
     val apiKey by settings.apiKey.collectAsState(initial = "")
@@ -143,7 +150,17 @@ fun SettingsScreen() {
     LaunchedEffect(userAgent) { userAgentInput = userAgent }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("VoxEngine 设置") }) }
+        topBar = {
+            if (themeStyle == AppThemeStyle.LIQUID_GLASS) {
+                VoxPageHeader(
+                    title = "让文字，有声有色。",
+                    subtitle = "你的声音工作台",
+                    eyebrow = "VOX / ENGINE"
+                )
+            } else {
+                TopAppBar(title = { Text("VoxEngine 设置") })
+            }
+        }
     ) { padding ->
         Column(
             modifier = Modifier
@@ -152,6 +169,26 @@ fun SettingsScreen() {
                 .padding(padding)
                 .padding(16.dp)
         ) {
+
+        ThemeStylePicker(
+            selectedStyle = themeStyle,
+            enabled = !savingTheme,
+            onStyleSelected = { style ->
+                savingTheme = true
+                scope.launch {
+                    try {
+                        settings.updateUiTheme(style)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        Toast.makeText(context, "主题保存失败，请重试", Toast.LENGTH_SHORT).show()
+                    } finally {
+                        savingTheme = false
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+        )
 
         // 深色模式
         Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {

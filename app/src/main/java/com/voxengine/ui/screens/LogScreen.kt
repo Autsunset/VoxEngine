@@ -14,8 +14,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -25,7 +26,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -42,6 +42,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import com.voxengine.data.AppThemeStyle
+import com.voxengine.ui.components.VoxPageHeader
+import com.voxengine.ui.theme.LocalAppThemeStyle
+import com.voxengine.ui.components.VoxCard as Card
+import com.voxengine.ui.components.VoxScreenScaffold as Scaffold
 import com.voxengine.util.LogManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -57,6 +62,8 @@ fun LogScreen() {
     val context = LocalContext.current
     val appContext = context.applicationContext
     val scope = rememberCoroutineScope()
+    val isGlass = LocalAppThemeStyle.current == AppThemeStyle.LIQUID_GLASS
+    val filterScrollState = rememberScrollState()
     var dates by remember { mutableStateOf(emptyList<String>()) }
     var selectedDate by remember { mutableStateOf("") }
     var level by remember { mutableStateOf("全部") }
@@ -102,10 +109,31 @@ fun LogScreen() {
     val safeLogPage = logPage.coerceIn(0, pageCount - 1)
     val visibleEntries = entries.drop(safeLogPage * LOG_PAGE_SIZE).take(LOG_PAGE_SIZE)
 
-    Scaffold(topBar = { TopAppBar(title = { Text("日志查询") }) }) { padding ->
+    Scaffold(
+        topBar = {
+            if (isGlass) {
+                VoxPageHeader(
+                    title = "运行日志",
+                    subtitle = "每一次请求，都有迹可循",
+                    eyebrow = "DIAGNOSTICS"
+                )
+            } else {
+                TopAppBar(title = { Text("日志查询") })
+            }
+        }
+    ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            Card(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(12.dp).then(
+                    if (isGlass) Modifier.weight(1.45f, fill = false) else Modifier
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .then(if (isGlass) Modifier.verticalScroll(filterScrollState) else Modifier)
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         ExposedDropdownMenuBox(
                             expanded = dateExpanded,
@@ -174,43 +202,55 @@ fun LogScreen() {
                     )
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        Button(enabled = !isLoading, onClick = { refresh() }) { Text(if (isLoading) "查询中" else "查询") }
-                        OutlinedButton(enabled = entries.isNotEmpty() && !isLoading, onClick = {
-                            scope.launch {
-                                try {
-                                    val text = withContext(Dispatchers.Default) { LogManager.formatEntries(entries) }
-                                    if (text.length > MAX_COPY_LOG_CHARS) {
-                                        Toast.makeText(context, "日志过长，请用导出结果", Toast.LENGTH_LONG).show()
-                                    } else {
-                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        clipboard.setPrimaryClip(ClipData.newPlainText("VoxEngine Log", text))
-                                        Toast.makeText(context, "已复制 ${entries.size} 条", Toast.LENGTH_SHORT).show()
-                                    }
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "复制失败: ${e.message}", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        }) { Text("复制结果") }
-                        OutlinedButton(enabled = entries.isNotEmpty() && !isLoading, onClick = {
-                            scope.launch {
-                                try {
-                                    val file = withContext(Dispatchers.IO) { LogManager.exportEntries(appContext, entries) }
-                                    if (file == null) {
-                                        Toast.makeText(context, "没有可导出的日志", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                            type = "text/plain"
-                                            putExtra(Intent.EXTRA_STREAM, uri)
-                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        Button(
+                            enabled = !isLoading,
+                            modifier = if (isGlass) Modifier.weight(1f) else Modifier,
+                            onClick = { refresh() }
+                        ) { Text(if (isLoading) "查询中" else "查询") }
+                        OutlinedButton(
+                            enabled = entries.isNotEmpty() && !isLoading,
+                            modifier = if (isGlass) Modifier.weight(1f) else Modifier,
+                            onClick = {
+                                scope.launch {
+                                    try {
+                                        val text = withContext(Dispatchers.Default) { LogManager.formatEntries(entries) }
+                                        if (text.length > MAX_COPY_LOG_CHARS) {
+                                            Toast.makeText(context, "日志过长，请用导出结果", Toast.LENGTH_LONG).show()
+                                        } else {
+                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                            clipboard.setPrimaryClip(ClipData.newPlainText("VoxEngine Log", text))
+                                            Toast.makeText(context, "已复制 ${entries.size} 条", Toast.LENGTH_SHORT).show()
                                         }
-                                        context.startActivity(Intent.createChooser(shareIntent, "导出日志"))
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "复制失败: ${e.message}", Toast.LENGTH_SHORT).show()
                                     }
-                                } catch (e: Exception) {
-                                    Toast.makeText(context, "导出失败: ${e.message}", Toast.LENGTH_SHORT).show()
                                 }
                             }
-                        }) { Text("导出结果") }
+                        ) { Text("复制结果") }
+                        OutlinedButton(
+                            enabled = entries.isNotEmpty() && !isLoading,
+                            modifier = if (isGlass) Modifier.weight(1f) else Modifier,
+                            onClick = {
+                                scope.launch {
+                                    try {
+                                        val file = withContext(Dispatchers.IO) { LogManager.exportEntries(appContext, entries) }
+                                        if (file == null) {
+                                            Toast.makeText(context, "没有可导出的日志", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                                type = "text/plain"
+                                                putExtra(Intent.EXTRA_STREAM, uri)
+                                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            }
+                                            context.startActivity(Intent.createChooser(shareIntent, "导出日志"))
+                                        }
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "导出失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        ) { Text("导出结果") }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         OutlinedButton(enabled = !isLoading, onClick = {
@@ -244,12 +284,36 @@ fun LogScreen() {
                     "第${safeLogPage + 1}/${pageCount}页 · 当前${visibleEntries.size}条",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 10.dp)
+                    modifier = Modifier
+                        .then(if (isGlass) Modifier.weight(1f) else Modifier)
+                        .padding(top = 10.dp)
                 )
                 TextButton(enabled = safeLogPage < pageCount - 1 && !isLoading, onClick = { logPage = safeLogPage + 1 }) { Text("下一页") }
             }
 
-            LazyColumn(modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
+            LazyColumn(
+                modifier = Modifier
+                    .then(if (isGlass) Modifier.weight(1f).fillMaxWidth() else Modifier.fillMaxSize())
+                    .padding(horizontal = 8.dp)
+            ) {
+                if (isGlass && visibleEntries.isEmpty()) {
+                    item {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 24.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                if (isLoading) "正在查找记录" else "暂无匹配的日志",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                if (isLoading) "请稍候，正在整理运行信息。" else "调整日期或关键词，再查询一次。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
                 itemsIndexed(visibleEntries, key = { index, entry -> "${entry.timestamp}-${entry.level}-${entry.tag}-${safeLogPage}-$index" }) { _, entry ->
                     val color = when (entry.level) {
                         "E" -> MaterialTheme.colorScheme.error

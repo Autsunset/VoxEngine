@@ -8,16 +8,18 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -33,13 +35,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.content.ContextCompat
+import com.voxengine.data.AppThemeStyle
 import com.voxengine.reader.ReaderPlaybackService
 import com.voxengine.reader.PlaybackSnapshot
+import com.voxengine.ui.components.VoxPageHeader
+import com.voxengine.ui.theme.LocalAppThemeStyle
+import com.voxengine.ui.theme.VoxEngineTheme
+import com.voxengine.ui.components.VoxScreenScaffold as Scaffold
 import com.voxengine.ui.screens.reader.Bookshelf
 import com.voxengine.ui.screens.reader.ReaderPage
 import com.voxengine.ui.screens.reader.ReaderTopMenu
@@ -60,6 +68,7 @@ fun ReaderScreen(
     val viewModel: ReaderViewModel = viewModel()
     val uiState by viewModel.uiState.collectAsState()
     val books by viewModel.books.collectAsState()
+    val isGlass = LocalAppThemeStyle.current == AppThemeStyle.LIQUID_GLASS
 
     // 纯 UI 状态：菜单显隐 / 面板 / 音色下拉，无需在配置变更后存活，留在组合内。
     var menuVisible by remember { mutableStateOf(false) }
@@ -106,14 +115,27 @@ fun ReaderScreen(
     if (book == null) {
         Scaffold(
             topBar = {
-                TopAppBar(
-                    title = { Text("书架") },
-                    actions = {
-                        IconButton(onClick = { openDocumentLauncher.launch(NOVEL_MIME_TYPES) }) {
-                            Icon(Icons.Default.UploadFile, contentDescription = "导入小说")
+                if (isGlass) {
+                    VoxPageHeader(
+                        title = "随身书房",
+                        subtitle = if (books.isEmpty()) "下一段故事，从这里开始" else "${books.size} 本藏书 · 随时继续你的故事",
+                        eyebrow = "LIBRARY",
+                        actions = {
+                            IconButton(onClick = { openDocumentLauncher.launch(NOVEL_MIME_TYPES) }) {
+                                Icon(Icons.Default.UploadFile, contentDescription = "导入小说")
+                            }
                         }
-                    }
-                )
+                    )
+                } else {
+                    TopAppBar(
+                        title = { Text("书架") },
+                        actions = {
+                            IconButton(onClick = { openDocumentLauncher.launch(NOVEL_MIME_TYPES) }) {
+                                Icon(Icons.Default.UploadFile, contentDescription = "导入小说")
+                            }
+                        }
+                    )
+                }
             }
         ) { padding ->
             Bookshelf(
@@ -125,7 +147,8 @@ fun ReaderScreen(
                     viewModel.openBook(item)
                 },
                 onDelete = { item -> viewModel.deleteBook(item) },
-                modifier = Modifier.padding(padding)
+                modifier = if (isGlass) Modifier else Modifier.padding(padding),
+                contentPadding = if (isGlass) padding else PaddingValues(0.dp)
             )
         }
         return
@@ -183,125 +206,130 @@ fun ReaderScreen(
         )
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        ReaderPage(
-            book = book,
-            chapters = uiState.chapters,
-            pages = uiState.pages,
-            chapterIndex = uiState.chapterIndex,
-            pageIndex = uiState.pageIndex,
-            isLoadingBook = uiState.isLoadingBook,
-            selectedParagraphIndex = uiState.selectedParagraphIndex,
-            pageAnimationKey = uiState.pageAnimationKey,
-            pageAnimationForward = uiState.pageAnimationForward,
-            onPageTargetChanged = { viewModel.onPageTargetChanged(it) },
-            onPagesMeasured = { measuredChapterIndex, measuredPages ->
-                viewModel.onPagesMeasured(measuredChapterIndex, measuredPages)
-            },
-            onParagraphTap = {
-                if (uiState.selectedParagraphIndex != null) viewModel.clearSelectedParagraph() else toggleReaderMenu()
-            },
-            onParagraphLongPress = { index, _ -> viewModel.selectParagraph(index) },
-            onCopyParagraph = { paragraph ->
-                clipboard.setText(AnnotatedString(paragraph))
-                viewModel.setStatus("已复制该段")
-            },
-            onReadFromParagraph = { index -> viewModel.startListening(index) },
-            onPreviousPage = { viewModel.previousPage() },
-            onNextPage = { viewModel.nextPage() },
-            onCenterTap = { toggleReaderMenu() }
-        )
+    // Keep reader text metrics and pagination independent of the app's chrome theme.
+    VoxEngineTheme(themeStyle = AppThemeStyle.CLASSIC) {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                ReaderPage(
+                    book = book,
+                    chapters = uiState.chapters,
+                    pages = uiState.pages,
+                    chapterIndex = uiState.chapterIndex,
+                    pageIndex = uiState.pageIndex,
+                    isLoadingBook = uiState.isLoadingBook,
+                    selectedParagraphIndex = uiState.selectedParagraphIndex,
+                    pageAnimationKey = uiState.pageAnimationKey,
+                    pageAnimationForward = uiState.pageAnimationForward,
+                    onPageTargetChanged = { viewModel.onPageTargetChanged(it) },
+                    onPagesMeasured = { measuredChapterIndex, measuredPages ->
+                        viewModel.onPagesMeasured(measuredChapterIndex, measuredPages)
+                    },
+                    onParagraphTap = {
+                        if (uiState.selectedParagraphIndex != null) viewModel.clearSelectedParagraph() else toggleReaderMenu()
+                    },
+                    onParagraphLongPress = { index, _ -> viewModel.selectParagraph(index) },
+                    onCopyParagraph = { paragraph ->
+                        clipboard.setText(AnnotatedString(paragraph))
+                        viewModel.setStatus("已复制该段")
+                    },
+                    onReadFromParagraph = { index -> viewModel.startListening(index) },
+                    onPreviousPage = { viewModel.previousPage() },
+                    onNextPage = { viewModel.nextPage() },
+                    onCenterTap = { toggleReaderMenu() }
+                )
 
-        if (menuVisible) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clickable {
-                        menuVisible = false
-                        panelMode = READER_PANEL_NONE
-                    }
-            )
-            ReaderTopMenu(
-                title = book.title,
-                chapterTitle = uiState.chapters.getOrNull(uiState.chapterIndex)?.title.orEmpty(),
-                onBack = {
-                    menuVisible = false
-                    panelMode = READER_PANEL_NONE
-                    viewModel.closeBook()
-                },
-                onImport = { openDocumentLauncher.launch(NOVEL_MIME_TYPES) },
-                modifier = Modifier.align(Alignment.TopCenter)
-            )
-            ReaderBottomMenu(
-                chapters = uiState.chapters,
-                currentChapterIndex = uiState.chapterIndex,
-                currentPageIndex = uiState.pageIndex,
-                pageCount = uiState.pages.size,
-                panelMode = panelMode,
-                selectedVoiceName = uiState.selectedVoiceName,
-                selectedStyle = uiState.selectedStyle,
-                voices = uiState.voices,
-                voiceExpanded = voiceExpanded,
-                onVoiceExpandedChange = { voiceExpanded = it },
-                onVoiceSelected = { voice ->
-                    viewModel.selectVoice(voice)
-                    voiceExpanded = false
-                },
-                onStyleChange = { viewModel.setStyle(it) },
-                roleEnabled = uiState.roleEnabled,
-                onRoleEnabledChange = { viewModel.onRoleEnabledChange(it) },
-                roleProfile = uiState.roleProfile,
-                onNarrationVoiceChange = { viewModel.setNarrationVoice(it) },
-                onNarrationStyleChange = { viewModel.setNarrationStyle(it) },
-                onDialogueVoiceChange = { viewModel.setDialogueVoice(it) },
-                onDialogueStyleChange = { viewModel.setDialogueStyle(it) },
-                onCharacterSave = { name, voice, style -> viewModel.saveCharacterVoice(name, voice, style) },
-                onCharacterRemove = { name -> viewModel.removeCharacterVoice(name) },
-                onRulesChange = viewModel::setMatchRules,
-                onRoleImport = { roleImportLauncher.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
-                onRoleExport = { roleExportLauncher.launch("vox-role-rules.json") },
-                synthesisOptions = uiState.synthesisOptions,
-                onSynthesisOptionsChange = viewModel::setSynthesisOptions,
-                onCacheChapters = viewModel::cacheChapters,
-                canCache = canListen && !uiState.isListening,
-                readerGapMs = uiState.readerGapMs,
-                readerSleepMinutes = uiState.readerSleepMinutes,
-                sleepDeadlineElapsedRealtime = uiState.sleepDeadlineElapsedRealtime,
-                onSleepTimerClick = { sleepTimerVisible = true },
-                readerStopAfterChapters = uiState.readerStopAfterChapters,
-                conservativeRequestIntervalMs = uiState.conservativeRequestIntervalMs,
-                retryCount = uiState.retryCount,
-                retryBaseDelayMs = uiState.retryBaseDelayMs,
-                onGapChange = { viewModel.onGapChange(it) },
-                onStopAfterChaptersChange = { viewModel.onStopAfterChaptersChange(it) },
-                onConservativeRequestIntervalChange = { viewModel.onConservativeRequestIntervalChange(it) },
-                onRetryCountChange = { viewModel.onRetryCountChange(it) },
-                onRetryBaseDelayChange = { viewModel.onRetryBaseDelayChange(it) },
-                onGapChangeFinished = { viewModel.commitGap() },
-                onStopAfterChaptersChangeFinished = { viewModel.commitStopAfterChapters() },
-                onConservativeRequestIntervalChangeFinished = { viewModel.commitConservativeRequestInterval() },
-                onRetryCountChangeFinished = { viewModel.commitRetryCount() },
-                onRetryBaseDelayChangeFinished = { viewModel.commitRetryBaseDelay() },
-                isListening = uiState.isListening,
-                isPaused = uiState.isPaused,
-                canListen = canListen,
-                statusText = uiState.statusText,
-                onPanelChange = { panelMode = if (panelMode == it) READER_PANEL_NONE else it },
-                onChapterSelected = { index ->
-                    viewModel.setPosition(index, 0)
-                    panelMode = READER_PANEL_NONE
-                },
-                onPreviousChapter = { viewModel.previousChapter() },
-                onNextChapter = { viewModel.nextChapter() },
-                onPreviousPage = { viewModel.previousPage() },
-                onNextPage = { viewModel.nextPage() },
-                onPageSelected = { page -> viewModel.setPosition(uiState.chapterIndex, page) },
-                onStartListening = { viewModel.startListening() },
-                onPauseListening = { viewModel.pauseListening() },
-                onResumeListening = { viewModel.resumeListening() },
-                onStopListening = { viewModel.stopListening() },
-                modifier = Modifier.align(Alignment.BottomCenter)
-            )
+                if (menuVisible) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable {
+                                menuVisible = false
+                                panelMode = READER_PANEL_NONE
+                            }
+                    )
+                    ReaderTopMenu(
+                        title = book.title,
+                        chapterTitle = uiState.chapters.getOrNull(uiState.chapterIndex)?.title.orEmpty(),
+                        onBack = {
+                            menuVisible = false
+                            panelMode = READER_PANEL_NONE
+                            viewModel.closeBook()
+                        },
+                        onImport = { openDocumentLauncher.launch(NOVEL_MIME_TYPES) },
+                        modifier = Modifier.align(Alignment.TopCenter)
+                    )
+                    ReaderBottomMenu(
+                        chapters = uiState.chapters,
+                        currentChapterIndex = uiState.chapterIndex,
+                        currentPageIndex = uiState.pageIndex,
+                        pageCount = uiState.pages.size,
+                        panelMode = panelMode,
+                        selectedVoiceName = uiState.selectedVoiceName,
+                        selectedStyle = uiState.selectedStyle,
+                        voices = uiState.voices,
+                        voiceExpanded = voiceExpanded,
+                        onVoiceExpandedChange = { voiceExpanded = it },
+                        onVoiceSelected = { voice ->
+                            viewModel.selectVoice(voice)
+                            voiceExpanded = false
+                        },
+                        onStyleChange = { viewModel.setStyle(it) },
+                        roleEnabled = uiState.roleEnabled,
+                        onRoleEnabledChange = { viewModel.onRoleEnabledChange(it) },
+                        roleProfile = uiState.roleProfile,
+                        onNarrationVoiceChange = { viewModel.setNarrationVoice(it) },
+                        onNarrationStyleChange = { viewModel.setNarrationStyle(it) },
+                        onDialogueVoiceChange = { viewModel.setDialogueVoice(it) },
+                        onDialogueStyleChange = { viewModel.setDialogueStyle(it) },
+                        onCharacterSave = { name, voice, style -> viewModel.saveCharacterVoice(name, voice, style) },
+                        onCharacterRemove = { name -> viewModel.removeCharacterVoice(name) },
+                        onRulesChange = viewModel::setMatchRules,
+                        onRoleImport = { roleImportLauncher.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
+                        onRoleExport = { roleExportLauncher.launch("vox-role-rules.json") },
+                        synthesisOptions = uiState.synthesisOptions,
+                        onSynthesisOptionsChange = viewModel::setSynthesisOptions,
+                        onCacheChapters = viewModel::cacheChapters,
+                        canCache = canListen && !uiState.isListening,
+                        readerGapMs = uiState.readerGapMs,
+                        readerSleepMinutes = uiState.readerSleepMinutes,
+                        sleepDeadlineElapsedRealtime = uiState.sleepDeadlineElapsedRealtime,
+                        onSleepTimerClick = { sleepTimerVisible = true },
+                        readerStopAfterChapters = uiState.readerStopAfterChapters,
+                        conservativeRequestIntervalMs = uiState.conservativeRequestIntervalMs,
+                        retryCount = uiState.retryCount,
+                        retryBaseDelayMs = uiState.retryBaseDelayMs,
+                        onGapChange = { viewModel.onGapChange(it) },
+                        onStopAfterChaptersChange = { viewModel.onStopAfterChaptersChange(it) },
+                        onConservativeRequestIntervalChange = { viewModel.onConservativeRequestIntervalChange(it) },
+                        onRetryCountChange = { viewModel.onRetryCountChange(it) },
+                        onRetryBaseDelayChange = { viewModel.onRetryBaseDelayChange(it) },
+                        onGapChangeFinished = { viewModel.commitGap() },
+                        onStopAfterChaptersChangeFinished = { viewModel.commitStopAfterChapters() },
+                        onConservativeRequestIntervalChangeFinished = { viewModel.commitConservativeRequestInterval() },
+                        onRetryCountChangeFinished = { viewModel.commitRetryCount() },
+                        onRetryBaseDelayChangeFinished = { viewModel.commitRetryBaseDelay() },
+                        isListening = uiState.isListening,
+                        isPaused = uiState.isPaused,
+                        canListen = canListen,
+                        statusText = uiState.statusText,
+                        onPanelChange = { panelMode = if (panelMode == it) READER_PANEL_NONE else it },
+                        onChapterSelected = { index ->
+                            viewModel.setPosition(index, 0)
+                            panelMode = READER_PANEL_NONE
+                        },
+                        onPreviousChapter = { viewModel.previousChapter() },
+                        onNextChapter = { viewModel.nextChapter() },
+                        onPreviousPage = { viewModel.previousPage() },
+                        onNextPage = { viewModel.nextPage() },
+                        onPageSelected = { page -> viewModel.setPosition(uiState.chapterIndex, page) },
+                        onStartListening = { viewModel.startListening() },
+                        onPauseListening = { viewModel.pauseListening() },
+                        onResumeListening = { viewModel.resumeListening() },
+                        onStopListening = { viewModel.stopListening() },
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
+            }
         }
     }
 }

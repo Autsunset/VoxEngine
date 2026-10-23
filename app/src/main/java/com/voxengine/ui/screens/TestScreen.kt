@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -19,7 +20,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -31,7 +31,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -51,9 +50,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.voxengine.audio.AudioUtils
 import com.voxengine.data.AppDatabase
+import com.voxengine.data.AppThemeStyle
 import com.voxengine.data.SettingsRepository
 import com.voxengine.data.SynthesisHistoryEntity
 import com.voxengine.engine.EngineRegistry
+import com.voxengine.ui.components.VoxPageHeader
+import com.voxengine.ui.theme.LocalAppThemeStyle
+import com.voxengine.ui.components.VoxCard as Card
+import com.voxengine.ui.components.VoxScreenScaffold as Scaffold
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -71,6 +75,7 @@ fun TestScreen() {
     val scope = rememberCoroutineScope()
     val settings = remember { SettingsRepository(context) }
     val db = remember { AppDatabase.getDatabase(context) }
+    val isGlass = LocalAppThemeStyle.current == AppThemeStyle.LIQUID_GLASS
 
     val currentEngineId by settings.currentEngine.collectAsState(initial = "mimo")
     val apiKey by settings.apiKey.collectAsState(initial = "")
@@ -144,7 +149,17 @@ fun TestScreen() {
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("TTS 测试 - ${activeEngine?.name ?: currentEngineId}") }) }
+        topBar = {
+            if (isGlass) {
+                VoxPageHeader(
+                    title = "声音实验室",
+                    subtitle = "${activeEngine?.name ?: currentEngineId} · 让文字拥有声音",
+                    eyebrow = "STUDIO"
+                )
+            } else {
+                TopAppBar(title = { Text("TTS 测试 - ${activeEngine?.name ?: currentEngineId}") })
+            }
+        }
     ) { padding ->
         Column(
             modifier = Modifier
@@ -182,7 +197,11 @@ fun TestScreen() {
             value = text,
             onValueChange = { text = it },
             label = { Text("输入文本") },
-            modifier = Modifier.fillMaxWidth().height(120.dp)
+            modifier = Modifier.fillMaxWidth().then(
+                if (isGlass) Modifier.heightIn(min = 160.dp) else Modifier.height(120.dp)
+            ),
+            minLines = if (isGlass) 4 else 1,
+            maxLines = if (isGlass) 8 else Int.MAX_VALUE
         )
         Spacer(Modifier.height(12.dp))
 

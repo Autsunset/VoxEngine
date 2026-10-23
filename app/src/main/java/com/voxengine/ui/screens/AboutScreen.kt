@@ -3,7 +3,6 @@ package com.voxengine.ui.screens
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,7 +11,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -25,11 +23,17 @@ import com.voxengine.ui.navigation.Screen
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.voxengine.data.AppThemeStyle
+import com.voxengine.ui.components.LocalVoxNavigationInset
+import com.voxengine.ui.components.VoxPageHeader
+import com.voxengine.ui.theme.LocalAppThemeStyle
+import com.voxengine.ui.components.VoxCard as Card
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AboutScreen(navController: NavController = rememberNavController()) {
     val context = LocalContext.current
+    val isGlass = LocalAppThemeStyle.current == AppThemeStyle.LIQUID_GLASS
 
     fun openUrl(url: String) {
         try {
@@ -43,12 +47,23 @@ fun AboutScreen(navController: NavController = rememberNavController()) {
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(16.dp)
+            .padding(if (isGlass) 0.dp else 16.dp)
+            .then(
+                if (isGlass) Modifier.padding(bottom = LocalVoxNavigationInset.current) else Modifier
+            )
     ) {
-        TopAppBar(title = { Text("关于") })
+        if (isGlass) {
+            VoxPageHeader(
+                title = "关于 VoxEngine",
+                subtitle = "开放的引擎，自由的声音。",
+                eyebrow = "ABOUT"
+            )
+        } else {
+            TopAppBar(title = { Text("关于") })
+        }
 
         // 项目信息
-        Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Card(modifier = Modifier.fillMaxWidth().padding(horizontal = if (isGlass) 16.dp else 0.dp, vertical = 8.dp)) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("VoxEngine", style = MaterialTheme.typography.headlineMedium)
                 Text("版本 ${com.voxengine.BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodySmall,
@@ -78,7 +93,7 @@ fun AboutScreen(navController: NavController = rememberNavController()) {
         }
 
         // 服务条款与隐私协议
-        Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Card(modifier = Modifier.fillMaxWidth().padding(horizontal = if (isGlass) 16.dp else 0.dp, vertical = 8.dp)) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("服务条款与隐私协议", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
@@ -97,7 +112,7 @@ fun AboutScreen(navController: NavController = rememberNavController()) {
         }
 
         // 免责声明
-        Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Card(modifier = Modifier.fillMaxWidth().padding(horizontal = if (isGlass) 16.dp else 0.dp, vertical = 8.dp)) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("免责声明", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))

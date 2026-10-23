@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
@@ -30,6 +31,9 @@ class SettingsRepository(private val context: Context) {
     val defaultTemperature: Flow<Float> = context.dataStore.data.map { it[KEY_DEFAULT_TEMPERATURE] ?: 0.6f }
     val speed: Flow<Float> = context.dataStore.data.map { it[KEY_SPEED] ?: 1.0f }
     val darkMode: Flow<Boolean> = context.dataStore.data.map { it[KEY_DARK_MODE] ?: false }
+    val uiTheme: Flow<AppThemeStyle> = context.dataStore.data
+        .map { AppThemeStyle.fromStorage(it[KEY_UI_THEME]) }
+        .distinctUntilChanged()
     val currentEngine: Flow<String> = context.dataStore.data.map { it[KEY_CURRENT_ENGINE] ?: "mimo" }
     val userAgent: Flow<String> = context.dataStore.data.map { it[KEY_USER_AGENT] ?: "openclaw/unknown" }
     val parallelSynthesis: Flow<Boolean> = context.dataStore.data.map { it[KEY_PARALLEL_SYNTHESIS] ?: false }
@@ -101,6 +105,25 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[KEY_DARK_MODE] = enabled }
     }
 
+    suspend fun updateUiTheme(style: AppThemeStyle) {
+        context.dataStore.edit { it[KEY_UI_THEME] = style.storageValue }
+        cacheUiThemeMirror(style)
+    }
+
+    // The mirror seeds the first frame; DataStore remains the source of truth.
+    private val uiThemeMirrorPreferences by lazy {
+        context.getSharedPreferences(UI_THEME_MIRROR_PREFS, Context.MODE_PRIVATE)
+    }
+
+    fun uiThemeMirror(): AppThemeStyle =
+        AppThemeStyle.fromStorage(uiThemeMirrorPreferences.getString(KEY_UI_THEME_MIRROR, null))
+
+    fun cacheUiThemeMirror(style: AppThemeStyle) {
+        uiThemeMirrorPreferences.edit()
+            .putString(KEY_UI_THEME_MIRROR, style.storageValue)
+            .apply()
+    }
+
     // 夜间模式镜像到 SharedPreferences：启动时同步读取，避免在主线程阻塞读 DataStore（首次访问含磁盘 I/O）。
     private val nightModeMirror by lazy {
         context.getSharedPreferences(NIGHT_MODE_MIRROR_PREFS, Context.MODE_PRIVATE)
@@ -141,6 +164,7 @@ class SettingsRepository(private val context: Context) {
         private val KEY_DEFAULT_TEMPERATURE = floatPreferencesKey("default_temperature")
         private val KEY_SPEED = floatPreferencesKey("speed")
         private val KEY_DARK_MODE = booleanPreferencesKey("dark_mode")
+        private val KEY_UI_THEME = stringPreferencesKey("ui_theme")
         private val KEY_CURRENT_ENGINE = stringPreferencesKey("current_engine")
         private val KEY_USER_AGENT = stringPreferencesKey("user_agent")
         private val KEY_PARALLEL_SYNTHESIS = booleanPreferencesKey("parallel_synthesis")
@@ -160,6 +184,8 @@ class SettingsRepository(private val context: Context) {
 
         private const val NIGHT_MODE_MIRROR_PREFS = "night_mode_mirror"
         private const val KEY_DARK_MODE_MIRROR = "dark_mode"
+        private const val UI_THEME_MIRROR_PREFS = "ui_theme_mirror"
+        private const val KEY_UI_THEME_MIRROR = "ui_theme"
 
         private val gson by lazy { com.google.gson.Gson() }
         private val stringMapType by lazy {
