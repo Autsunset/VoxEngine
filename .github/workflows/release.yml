@@ -1,10 +1,9 @@
 name: Release APK
 
 on:
+  # Releases are built and signed locally; pushing a release tag must not
+  # start a second, redundant build on GitHub.
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
 
 jobs:
   build-release:
