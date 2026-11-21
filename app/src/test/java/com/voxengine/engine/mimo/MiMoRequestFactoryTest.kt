@@ -43,6 +43,45 @@ class MiMoRequestFactoryTest {
     }
 
     @Test
+    fun `preset serializes either spelling of Cantonese as a dialect tag`() {
+        val text = "你今日想食啲咩呀？"
+        for (style in listOf("粤语", "  粵語  ")) {
+            val request = MiMoRequestFactory.build(text, "冰糖", style = style, context = context)
+            val json = Gson().toJsonTree(request).asJsonObject
+            val messages = json.getAsJsonArray("messages")
+            val user = messages[0].asJsonObject
+            val assistant = messages[1].asJsonObject
+
+            assertEquals("user", user.get("role").asString)
+            assertEquals("", user.get("content").asString)
+            assertEquals("assistant", assistant.get("role").asString)
+            assertEquals("(粤语)$text", assistant.get("content").asString)
+            assertEquals("冰糖", json.getAsJsonObject("audio").get("voice").asString)
+        }
+    }
+
+    @Test
+    fun `clone keeps reference audio when a dialect tag is set`() {
+        val voice = "data:audio/wav;base64,reference"
+        val text = "你要得不？"
+        val request = MiMoRequestFactory.build(text, voice, MiMoTTSClient.MODEL_CLONE, style = "四川话")
+
+        assertEquals(voice, request.audio.voice)
+        assertEquals("", request.messages[0].content)
+        assertEquals("(四川话)$text", request.messages[1].content)
+    }
+
+    @Test
+    fun `custom directions that mention Cantonese stay in the user message`() {
+        val text = "你好。"
+        val style = "用温柔的粤语慢慢朗读"
+        val request = MiMoRequestFactory.build(text, "冰糖", style = style)
+
+        assertEquals(style, request.messages[0].content)
+        assertEquals(text, request.messages[1].content)
+    }
+
+    @Test
     fun `disabled or neutral context does not add directions`() {
         for (context in listOf(null, "", "  ", "前文。当前段落。后文。")) {
             val request = MiMoRequestFactory.build("正文。", "茉莉", style = "无", context = context)

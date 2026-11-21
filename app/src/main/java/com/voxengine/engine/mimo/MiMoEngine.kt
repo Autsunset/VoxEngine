@@ -104,6 +104,26 @@ class MiMoEngine(
         return resolved
     }
 
+    private fun synthesisCacheKey(
+        text: String,
+        voice: String,
+        style: String?,
+        resolved: ResolvedVoice,
+        temperature: Float?,
+        context: String?
+    ): String {
+        val dialect = MiMoRequestFactory.dialectTag(resolved.model, style)
+        return AudioCache.generateKey(
+            text = text,
+            voice = voice,
+            style = dialect ?: style,
+            engineId = id,
+            voiceFingerprint = if (dialect == null) resolved.voiceFingerprint else "${resolved.voiceFingerprint}:dialect-tag",
+            temperature = temperature,
+            context = context
+        )
+    }
+
     private fun silenceResult(): SynthesisResult {
         val silence = AudioUtils.silentWav()
         return SynthesisResult(
@@ -155,15 +175,7 @@ class MiMoEngine(
                         return@async silenceResult()
                     }
                     val speechText = SpeechTextNormalizer.normalize(sentence)
-                    val cacheKey = AudioCache.generateKey(
-                        text = speechText,
-                        voice = voice,
-                        style = style,
-                        engineId = id,
-                        voiceFingerprint = resolved.voiceFingerprint,
-                        temperature = temperature,
-                        context = sentenceContext
-                    )
+                    val cacheKey = synthesisCacheKey(speechText, voice, style, resolved, temperature, sentenceContext)
                     AudioCache.get(cacheKey)?.let { cached ->
                         return@async SynthesisResult(
                             audioData = cached,
@@ -224,7 +236,7 @@ class MiMoEngine(
     suspend fun getCachedSynthesis(text: String, voice: String, style: String?, context: String?): SynthesisResult? {
         val resolved = resolveVoice(voice)
         val temperature = settingsRepository.defaultTemperature.first()
-        val key = AudioCache.generateKey(SpeechTextNormalizer.normalize(text), voice, style, id, resolved.voiceFingerprint, temperature, context)
+        val key = synthesisCacheKey(SpeechTextNormalizer.normalize(text), voice, style, resolved, temperature, context)
         val audio = AudioCache.get(key) ?: return null
         return SynthesisResult(audio, AudioFormat.WAV, AudioUtils.getWavSampleRate(audio), 0, AudioCache.isPersisted(key))
     }
@@ -242,15 +254,7 @@ class MiMoEngine(
         }
         val resolved = resolveVoice(voice)
         val temperature = settingsRepository.defaultTemperature.first()
-        val cacheKey = AudioCache.generateKey(
-            text = speechText,
-            voice = voice,
-            style = style,
-            engineId = id,
-            voiceFingerprint = resolved.voiceFingerprint,
-            temperature = temperature,
-            context = context
-        )
+        val cacheKey = synthesisCacheKey(speechText, voice, style, resolved, temperature, context)
         if (!optimizeTextPreview) {
             val cachedAudio = AudioCache.get(cacheKey)
             if (cachedAudio != null) {

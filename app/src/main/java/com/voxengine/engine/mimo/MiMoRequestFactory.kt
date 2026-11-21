@@ -15,6 +15,15 @@ internal object MiMoRequestFactory {
         "平静" to Regex("平静|淡淡地|淡然|从容|冷静|不紧不慢")
     )
 
+    fun dialectTag(model: String, style: String?): String? {
+        if (model == MiMoTTSClient.MODEL_DESIGN) return null
+        return when (val dialect = style?.trim()) {
+            "粤语", "粵語" -> "粤语"
+            "四川话", "东北话", "河南话" -> dialect
+            else -> null
+        }
+    }
+
     fun build(
         text: String,
         voice: String,
@@ -24,6 +33,7 @@ internal object MiMoRequestFactory {
         temperature: Float? = null,
         context: String? = null
     ): TTSRequest {
+        val dialect = dialectTag(model, style)
         // Never send neighboring prose; exclusion prompts do not prevent audio leakage.
         val styleInstruction = style?.trim()?.takeIf { it.isNotEmpty() && it != "无" }
             ?: context?.takeIf { it.isNotBlank() }?.let {
@@ -39,7 +49,11 @@ internal object MiMoRequestFactory {
                     Triple(voice, text, AudioConfig(format = "wav"))
                 }
             }
-            else -> Triple(styleInstruction ?: "", text, AudioConfig(format = "wav", voice = voice))
+            else -> Triple(
+                if (dialect == null) styleInstruction.orEmpty() else "",
+                dialect?.let { "($it)$text" } ?: text,
+                AudioConfig(format = "wav", voice = voice)
+            )
         }
         val messages = mutableListOf(
             Message(role = "user", content = userContent)

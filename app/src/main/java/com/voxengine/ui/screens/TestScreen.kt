@@ -81,6 +81,7 @@ fun TestScreen() {
     val apiKey by settings.apiKey.collectAsState(initial = "")
     val baseUrl by settings.baseUrl.collectAsState(initial = "https://api.xiaomimimo.com")
     val speed by settings.speed.collectAsState(initial = 1.0f)
+    val defaultStyle by settings.defaultStyle.collectAsState(initial = "无")
     val activeEngine = remember(currentEngineId) { EngineRegistry.get(currentEngineId) }
 
     val voices by produceState(initialValue = emptyList<com.voxengine.engine.VoiceInfo>(), activeEngine) {
@@ -97,7 +98,8 @@ fun TestScreen() {
     var text by remember { mutableStateOf("你好，欢迎使用 VoxEngine 语音合成引擎！") }
     var selectedVoiceId by remember { mutableStateOf("冰糖") }
     var selectedVoiceName by remember { mutableStateOf("冰糖") }
-    var selectedStyle by remember { mutableStateOf("") }
+    var styleOverride by remember(currentEngineId) { mutableStateOf<String?>(null) }
+    val selectedStyle = styleOverride ?: defaultStyle.takeUnless { it == "无" }.orEmpty()
     var isSynthesizing by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(false) }
     var isPaused by remember { mutableStateOf(false) }
@@ -237,7 +239,7 @@ fun TestScreen() {
             // 风格 - 自由输入框
             OutlinedTextField(
                 value = selectedStyle,
-                onValueChange = { selectedStyle = it },
+                onValueChange = { styleOverride = it },
                 label = { Text("风格（可自定义）") },
                 placeholder = { Text("如：温柔磁性、东北话") },
                 modifier = Modifier.weight(1f)
@@ -251,13 +253,13 @@ fun TestScreen() {
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             listOf("四川话", "粤语").forEach { dialect ->
-                OutlinedButton(onClick = { selectedStyle = dialect }) {
+                OutlinedButton(onClick = { styleOverride = dialect }) {
                     Text(dialect, style = MaterialTheme.typography.bodySmall)
                 }
             }
             // 清除风格按钮
             if (selectedStyle.isNotBlank()) {
-                TextButton(onClick = { selectedStyle = "" }) {
+                TextButton(onClick = { styleOverride = "" }) {
                     Text("清除", style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -402,7 +404,7 @@ fun TestScreen() {
                         text = record.text
                         selectedVoiceId = record.voice
                         selectedVoiceName = voiceDisplayName
-                        selectedStyle = record.style?.takeIf { it != "无" } ?: ""
+                        styleOverride = record.style?.takeIf { it != "无" }.orEmpty()
                     }
                 ) {
                     Row(
